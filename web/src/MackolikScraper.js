@@ -1,9 +1,13 @@
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import * as cheerio from 'cheerio';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { categorizeMarket, MAIN_CATEGORIES } from './marketCategorizer.js';
 
 puppeteer.use(StealthPlugin());
+
+const execFileAsync = promisify(execFile);
 
 export class MackolikScraper {
     constructor(options = {}) {
@@ -39,143 +43,326 @@ export class MackolikScraper {
         }
     }
 
-    /**
-     * İki takımın geçmiş maçını bulur ve oranlarını getirir.
-     */
-    async scrapeHistoricalMatch(homeTeam, awayTeam, year = null) {
-        this.log(`Taranıyor: ${homeTeam} vs ${awayTeam} ${year ? '(' + year + ')' : ''}`);
-        
-        await this.initBrowser();
-        const page = await this.browser.newPage();
-        
-        // Rastgele User-Agent ataması
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        
+    createAbortSignal(timeoutMs) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        return {
+            signal: controller.signal,
+            clear: () => clearTimeout(timeoutId)
+        };
+    }
+
+    normalizeSearchResultUrl(rawHref) {
+        if (!rawHref) return null;
+
         try {
-            // Mackolik araması veya DuckDuckGo üzerinden maç URL'sini bulalım
-            const query = `site:mackolik.com ${homeTeam} ${awayTeam} mac detay`;
-            const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-            this.log(`Gidiliyor: ${searchUrl}`);
-            
-            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-            
-            // Sonuçlardan Mackolik maç linklerini bul
-            const searchResults = await page.evaluate(() => {
-                const results = [];
-                const links = Array.from(document.querySelectorAll('a.result__a, a.result__url, .result__title a'));
-                for (let a of links) {
-                    let href = a.getAttribute('href') || '';
-                    if (href.includes('uddg=')) {
-                        try {
-                            href = decodeURIComponent(href.split('uddg=')[1].split('&')[0]);
-                        } catch(e) {}
-                    } else if (!href.startsWith('http')) {
-                        const text = a.textContent.trim();
-                        if (text.startsWith('www.') || text.includes('mackolik.com')) {
-                            href = 'https://' + text;
-                        }
+            let href = String(rawHref).trim();
+            if (href.startsWith('//')) href = `https:${href}`;
+            if (href.startsWith('/')) href = `https://duckduckgo.com${href}`;
+
+            if (href.includes('uddg=')) {
+                const redirectUrl = new URL(href);
+                href = redirectUrl.searchParams.get('uddg') || href;
+            }
+
+            const url = new URL(href);
+            if (url.hostname.toLowerCase() !== 'www.mackolik.com') return null;
+            if (!url.pathname.toLowerCase().startsWith('/mac/')) return null;
+
+            url.search = '';
+            url.hash = '';
+            return url.toString().replace(/\/$/, '');
+        } catch (_) {
+            return null;
+        }
+    }
+
+    extractSearchResults(html) {
+        const $ = cheerio.load(html || '');
+        const results = [];
+
+        $('a.result__a, a.result__url, .result__title a').each((_, element) => {
+            const url = this.normalizeSearchResultUrl($(element).attr('href'));
+            if (!url || results.some(result => result.url === url)) return;
+
+            results.push({
+                url,
+                title: $(element).text().trim()
+            });
+        });
+
+        return results;
+    }
+
+    toIddaaUrl(matchUrl) {
+        try {
+            const url = new URL(matchUrl);
+            const parts = url.pathname.split('/').filter(Boolean);
+            if (parts[0]?.toLowerCase() !== 'mac' || parts.length < 3) return null;
+
+            const slug = parts[1];
+            const knownTabs = new Set(['iddaa', 'istatistik', 'forum', 'karsilastirma']);
+            const hasTab = knownTabs.has((parts[2] || '').toLowerCase());
+            const matchId = hasTab ? parts[3] : parts[2];
+            if (!slug || !matchId) return null;
+
+            return `${url.origin}/mac/${slug}/iddaa/${matchId}`;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    canonicalDate(value) {
+        const raw = String(value || '').trim();
+        let match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+
+        match = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+        if (match) return `${match[3]}-${match[2]}-${match[1]}`;
+
+        return raw;
+    }
+
+    normalizeTeamName(value) {
+        return String(value || '')
+            .toLocaleLowerCase('tr-TR')
+            .replace(/ı/g, 'i')
+            .replace(/ğ/g, 'g')
+            .replace(/ü/g, 'u')
+            .replace(/ş/g, 's')
+            .replace(/ö/g, 'o')
+            .replace(/ç/g, 'c')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]+/g, ' ')
+            .trim();
+    }
+
+    teamNamesMatch(actual, expected) {
+        const normalizedActual = this.normalizeTeamName(actual);
+        const normalizedExpected = this.normalizeTeamName(expected);
+        if (!normalizedActual || !normalizedExpected) return false;
+        if (normalizedActual === normalizedExpected) return true;
+
+        const actualTokens = new Set(normalizedActual.split(' ').filter(token => token.length >= 3));
+        const expectedTokens = normalizedExpected.split(' ').filter(token => token.length >= 3);
+        return expectedTokens.some(token => actualTokens.has(token));
+    }
+
+    matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate) {
+        const expectedDate = this.canonicalDate(matchDate);
+        const actualDate = this.canonicalDate(parsed?.matchDate);
+        if (expectedDate && actualDate && expectedDate !== actualDate) return false;
+
+        if (parsed?.homeTeam && parsed?.awayTeam) {
+            return this.teamNamesMatch(parsed.homeTeam, homeTeam)
+                && this.teamNamesMatch(parsed.awayTeam, awayTeam);
+        }
+
+        return true;
+    }
+
+    buildHistory(searchResults, homeTeam, awayTeam) {
+        const history = {};
+
+        for (const item of searchResults) {
+            const dateMatch = item.title.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+            if (!dateMatch) continue;
+
+            const [, day, month, year] = dateMatch;
+            if (!history[year]) history[year] = {};
+            if (!history[year][month]) history[year][month] = [];
+
+            let resolvedHome = homeTeam;
+            let resolvedAway = awayTeam;
+            const titleParts = item.title.split(',')[0].split(' - ')[0];
+            if (titleParts.includes(' vs ')) {
+                const teams = titleParts.split(' vs ');
+                resolvedHome = teams[0].trim();
+                resolvedAway = teams[1].trim();
+            }
+
+            history[year][month].push({
+                homeTeam: resolvedHome,
+                awayTeam: resolvedAway,
+                date: `${day}.${month}.${year}`,
+                hasOdds: true
+            });
+        }
+
+        return history;
+    }
+
+    async searchMackolikWithHttp(query) {
+        const endpoints = [
+            'https://html.duckduckgo.com/html/',
+            'https://duckduckgo.com/html/'
+        ];
+
+        for (const endpoint of endpoints) {
+            const request = this.createAbortSignal(15000);
+            try {
+                const searchUrl = `${endpoint}?q=${encodeURIComponent(query)}`;
+                this.log(`Tarayıcısız arama deneniyor: ${searchUrl}`);
+                const response = await fetch(searchUrl, {
+                    signal: request.signal,
+                    headers: {
+                        // DuckDuckGo HTML endpoint'i tam Chrome UA ile bot sayfası
+                        // döndürebildiği için sade UA kullanıyoruz.
+                        'User-Agent': 'Mozilla/5.0',
+                        'Accept': 'text/html,application/xhtml+xml',
+                        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
                     }
-                    if (href.includes('mackolik.com/mac/')) {
-                        const cleanHref = href.split('?')[0].split('#')[0];
-                        if (!results.some(r => r.url === cleanHref)) {
-                            results.push({
-                                url: cleanHref,
-                                title: a.textContent.trim()
-                            });
-                        }
-                    }
+                });
+
+                if (!response.ok) continue;
+                const results = this.extractSearchResults(await response.text());
+                if (results.length > 0) {
+                    this.log(`Tarayıcısız aramada ${results.length} Mackolik sonucu bulundu.`);
+                    return results;
                 }
-                return results;
+            } catch (error) {
+                this.log(`Tarayıcısız arama başarısız: ${error.message}`);
+            } finally {
+                request.clear();
+            }
+        }
+
+        // DuckDuckGo bazı sunucu ağlarında Node TLS parmak izine 202 bot
+        // sayfası döndürüyor. curl aynı HTML endpoint'ini normal sonuçlarla
+        // açabildiği için, shell kullanmadan güvenli bir execFile yedeği uygula.
+        const curlUrl = `${endpoints[0]}?q=${encodeURIComponent(query)}`;
+        try {
+            this.log(`curl ile tarayıcısız arama deneniyor: ${curlUrl}`);
+            const { stdout } = await execFileAsync('curl', [
+                '-fsS',
+                '--max-time', '20',
+                '-A', 'Mozilla/5.0',
+                curlUrl
+            ], {
+                maxBuffer: 5 * 1024 * 1024
             });
 
-            if (!searchResults || searchResults.length === 0) {
-                this.log('Maç linki arama sonuçlarında bulunamadı.');
-                return null;
+            const results = this.extractSearchResults(stdout);
+            if (results.length > 0) {
+                this.log(`curl aramasında ${results.length} Mackolik sonucu bulundu.`);
+                return results;
             }
+        } catch (error) {
+            this.log(`curl araması başarısız: ${error.message}`);
+        }
 
-            const matchUrl = searchResults[0].url;
+        return [];
+    }
 
-            // /iddaa uzantılı sayfaya git
-            const iddaaUrl = matchUrl.replace(/\/istatistik\/|\/forum\/|\/karsilastirma\//, '/').replace(/\/mac\/([^\/]+)\/([a-z0-9]+)$/, '/mac/$1/iddaa/$2');
-            
-            // Eğer regex çalışmazsa fallback
-            let finalIddaaUrl = iddaaUrl;
-            if (!finalIddaaUrl.includes('/iddaa/')) {
-                const parts = matchUrl.split('/');
-                const id = parts.pop();
-                finalIddaaUrl = parts.join('/') + '/iddaa/' + id;
-            }
-            
-            this.log(`İddaa sayfasına gidiliyor: ${finalIddaaUrl}`);
+    async tryHttpCandidates(searchResults, homeTeam, awayTeam, matchDate, triedUrls) {
+        const history = this.buildHistory(searchResults, homeTeam, awayTeam);
 
-            // Tarihçe için diğer maçları toparlayalım
-            const history = {};
-            for (const item of searchResults) {
-                const dateMatch = item.title.match(/(\d{2})\.(\d{2})\.(\d{4})/);
-                if (dateMatch) {
-                    const [_, day, month, year] = dateMatch;
-                    if (!history[year]) history[year] = {};
-                    if (!history[year][month]) history[year][month] = [];
-                    
-                    let hTeam = homeTeam;
-                    let aTeam = awayTeam;
-                    const titleParts = item.title.split(',')[0].split(' - ')[0];
-                    if (titleParts.includes(' vs ')) {
-                        const split = titleParts.split(' vs ');
-                        hTeam = split[0].trim();
-                        aTeam = split[1].trim();
-                    }
-                    history[year][month].push({
-                        homeTeam: hTeam,
-                        awayTeam: aTeam,
-                        date: `${day}.${month}.${year}`,
-                        hasOdds: true
-                    });
-                }
-            }
-            
-            // 1. Önce hızlı doğrudan HTTP fetch deneyelim (Mackolik SSR iddaa içeriğini içerir)
+        for (const item of searchResults.slice(0, 8)) {
+            const finalIddaaUrl = this.toIddaaUrl(item.url);
+            if (!finalIddaaUrl || triedUrls.has(finalIddaaUrl)) continue;
+            triedUrls.add(finalIddaaUrl);
+
+            const request = this.createAbortSignal(25000);
             try {
-                this.log(`Hızlı doğrudan fetch deneniyor: ${finalIddaaUrl}`);
-                const fastRes = await fetch(finalIddaaUrl, {
+                this.log(`Doğrudan Mackolik sayfası deneniyor: ${finalIddaaUrl}`);
+                const response = await fetch(finalIddaaUrl, {
+                    signal: request.signal,
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                         'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
                     }
                 });
-                if (fastRes.ok) {
-                    const fastHtml = await fastRes.text();
-                    if (fastHtml.includes('widget-iddaa-markets__market-item') && !fastHtml.includes('502 Bad Gateway') && !fastHtml.includes('Cloudflare')) {
-                        this.log('Doğrudan fetch ile içerik başarıyla alındı (Hızlı yol).');
-                        const parsed = this.parseMackolikIddaa(fastHtml, finalIddaaUrl);
-                        if (parsed) {
-                            parsed.history = history;
-                            return parsed;
-                        }
-                    }
-                }
-            } catch (err) {
-                this.log(`Hızlı fetch başarısız, Puppeteer ile devam ediliyor: ${err.message}`);
+
+                if (!response.ok) continue;
+                const parsed = this.parseMackolikIddaa(await response.text(), finalIddaaUrl);
+                if (!parsed || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate)) continue;
+
+                parsed.history = history;
+                this.log('Mackolik oranları tarayıcısız olarak bulundu.');
+                return parsed;
+            } catch (error) {
+                this.log(`Doğrudan Mackolik isteği başarısız: ${error.message}`);
+            } finally {
+                request.clear();
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * İki takımın geçmiş maçını bulur ve oranlarını getirir.
+     */
+    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null) {
+        this.log(`Taranıyor: ${homeTeam} vs ${awayTeam} ${matchDate ? '(' + matchDate + ')' : ''}`);
+
+        const canonicalMatchDate = this.canonicalDate(matchDate);
+        const dateParts = canonicalMatchDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        const searchDate = dateParts
+            ? `${dateParts[3]}.${dateParts[2]}.${dateParts[1]}`
+            : (matchDate || '');
+        const query = `site:mackolik.com ${homeTeam} ${awayTeam} mac detay ${searchDate}`;
+        const triedUrls = new Set();
+        const httpResults = await this.searchMackolikWithHttp(query);
+        const httpResult = await this.tryHttpCandidates(
+            httpResults,
+            homeTeam,
+            awayTeam,
+            matchDate,
+            triedUrls
+        );
+        if (httpResult) return httpResult;
+
+        let page = null;
+        try {
+            this.log('HTTP yolu sonuç vermedi. Puppeteer yedek yolu deneniyor.');
+            await this.initBrowser();
+            page = await this.browser.newPage();
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+            const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+            this.log(`Gidiliyor: ${searchUrl}`);
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+
+            const searchResults = this.extractSearchResults(await page.content());
+
+            if (!searchResults || searchResults.length === 0) {
+                this.log('Maç linki arama sonuçlarında bulunamadı.');
+                return null;
             }
 
-            // 2. Puppeteer ile sayfayı aç
-            await page.goto(finalIddaaUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-            
-            const html = await page.content();
-            
-            this.log('Sayfa içeriği ayrıştırılıyor (Real DOM Parsing)');
-            const parsed = this.parseMackolikIddaa(html, finalIddaaUrl);
-            if (parsed) {
+            const browserHttpResult = await this.tryHttpCandidates(
+                searchResults,
+                homeTeam,
+                awayTeam,
+                matchDate,
+                triedUrls
+            );
+            if (browserHttpResult) return browserHttpResult;
+
+            const history = this.buildHistory(searchResults, homeTeam, awayTeam);
+            for (const item of searchResults.slice(0, 5)) {
+                const finalIddaaUrl = this.toIddaaUrl(item.url);
+                if (!finalIddaaUrl) continue;
+
+                this.log(`Puppeteer ile iddaa sayfasına gidiliyor: ${finalIddaaUrl}`);
+                await page.goto(finalIddaaUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                const parsed = this.parseMackolikIddaa(await page.content(), finalIddaaUrl);
+                if (!parsed || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate)) continue;
+
                 parsed.history = history;
+                return parsed;
             }
-            return parsed;
+
+            return null;
 
         } catch (error) {
             this.log(`Hata oluştu: ${error.message}`);
             return null;
         } finally {
-            await page.close();
+            if (page) await page.close();
         }
     }
 
