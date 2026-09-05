@@ -1,0 +1,22 @@
+{
+  "name": "oran-analiz-pro",
+  "version": "1.0.0",
+  "description": "Oran Analiz Pro - Bahis Oranları Analiz Sistemi",
+  "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "start": "node web/server.js",
+    "build": "cd web/frontend && npm install && npm run build",
+    "install:all": "cd web && npm install && cd frontend && npm install"
+  },
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "puppeteer": "^25.10.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

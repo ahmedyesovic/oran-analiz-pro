@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: oran-analiz-pro
+    runtime: node
+    buildCommand: npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUPPETEER_SKIP_DOWNLOAD
+        value: "false"

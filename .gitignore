@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build outputs (Render kendi build'ini yapar)
+# web/frontend/dist/ → build sırasında oluşturulacak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Scratch / test files
+scratch/
+web/scratch/
+*.log
+
+# Large data files
+nesine.json
+
+# Test files
+web/test_*.js
+web/dump_*.js
+web/parse_*.cjs
+testMatchFinder.js
+
+# PNG exports (geçici)
+web/*.png

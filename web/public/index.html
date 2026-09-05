@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nesine Oran Analiz Pro</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <main class="app-container">
+        <header>
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="#4ade80" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <h1>Oran Analiz Pro</h1>
+            </div>
+            <p class="subtitle">Canlı Nesine Bülteninden yapay zeka destekli takım eşleştirme ve oran çıkarma sistemi.</p>
+        </header>
+
+        <section class="search-section glass-panel">
+            <div class="input-group">
+                <label for="home-team">Ev Sahibi</label>
+                <div class="input-wrapper">
+                    <input type="text" id="home-team" placeholder="Örn: Ipswich FC" autocomplete="off">
+                </div>
+            </div>
+            <div class="vs-divider">VS</div>
+            <div class="input-group">
+                <label for="away-team">Deplasman</label>
+                <div class="input-wrapper">
+                    <input type="text" id="away-team" placeholder="Örn: Liverpool" autocomplete="off">
+                </div>
+            </div>
+            <button id="search-btn" class="primary-btn">
+                <span class="btn-text">Oranları Bul</span>
+                <span class="btn-loader hidden"></span>
+            </button>
+        </section>
+
+        <div id="error-message" class="error-toast hidden"></div>
+
+        <section id="results-section" class="results-section hidden">
+            <div class="match-header glass-panel">
+                <div class="match-meta">
+                    <span id="match-league" class="badge">İngiltere Premier Lig</span>
+                    <span id="match-date" class="match-time">17 Ağu 2024 14:30</span>
+                </div>
+                <h2 id="match-title">Ipswich Town - Liverpool</h2>
+                <div class="match-confidence">
+                    <span>Eşleşme Güven Skoru: </span><strong id="match-score" class="text-green">%98</strong>
+                </div>
+            </div>
+
+            <div class="actions-bar">
+                <button id="ai-export-btn" class="ai-btn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+                        <circle cx="12" cy="13" r="4"></circle>
+                    </svg>
+                    <span>AI Görsellerini İndir (PNG)</span>
+                </button>
+                <button id="copy-btn" class="secondary-btn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Tüm Oranları Kopyala
+                </button>
+            </div>
+
+            <!-- AI Export İlerleme Çubuğu -->
+            <div id="ai-export-progress" class="ai-progress-container hidden">
+                <div class="ai-progress-header">
+                    <span id="ai-progress-title">Görseller oluşturuluyor...</span>
+                    <span id="ai-progress-count">0/8</span>
+                </div>
+                <div class="ai-progress-track">
+                    <div id="ai-progress-fill" class="ai-progress-fill" style="width: 0%;"></div>
+                </div>
+            </div>
+
+            <div id="markets-container" class="markets-grid">
+                <!-- Oranlar buraya JavaScript ile eklenecek -->
+            </div>
+
+            <!-- GEÇMİŞ KARŞILAŞMALAR BÖLÜMÜ -->
+            <div id="historical-section" class="historical-section glass-panel">
+                <div class="historical-header">
+                    <h2>GEÇMİŞ KARŞILAŞMALAR</h2>
+                </div>
+                
+                <div class="historical-filters">
+                    <div class="filter-group">
+                        <label for="filter-year">Yıl:</label>
+                        <select id="filter-year">
+                            <option value="all">Tümü</option>
+                            <!-- Yıllar JS ile eklenecek -->
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-month">Ay:</label>
+                        <select id="filter-month">
+                            <option value="all">Tümü</option>
+                            <!-- Aylar JS ile eklenecek -->
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="filter-odds">Oran Durumu:</label>
+                        <select id="filter-odds">
+                            <option value="all">Tümü</option>
+                            <option value="has_odds">Nesine oranı bulunanlar</option>
+                            <option value="no_odds">Oran verisi bulunmayanlar</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="historical-matches-container" class="historical-matches-container">
+                    <!-- Geçmiş maçlar JS ile eklenecek -->
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="lib/html2canvas.min.js"></script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>

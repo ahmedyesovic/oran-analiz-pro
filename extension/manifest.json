@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Nesine Maç Oranları Çekici",
+  "version": "1.0.0",
+  "description": "Ev sahibi ve deplasman takımlarına göre Nesine futbol maçlarını bulur, 8 ana kategorideki tüm bahis pazarlarını ve oranlarını otomatik çeker.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Nesine Maç Oranları",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "downloads"
+  ],
+  "host_permissions": [
+    "https://*.nesine.com/*",
+    "https://cdnbulten.nesine.com/*",
+    "https://bulten.nesine.com/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.nesine.com/*"
+      ],
+      "js": [
+        "content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

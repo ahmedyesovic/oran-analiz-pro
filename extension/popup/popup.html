@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nesine Maç Oranları</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo-area">
+        <span class="logo-badge">IDDAA</span>
+        <h1>Maç Oranları Çekici</h1>
+      </div>
+      <div class="header-actions">
+        <label class="debug-toggle-label" title="Konsol Debug Modu">
+          <input type="checkbox" id="debugToggle" checked>
+          <span class="debug-indicator">DEBUG</span>
+        </label>
+      </div>
+    </header>
+
+    <!-- Aktif Sekme Bildirimi (Eğer kullanıcı bir Nesine maçındaysa) -->
+    <div id="tabNotice" class="tab-notice hidden">
+      <div class="tab-notice-content">
+        <span class="tab-icon">⚡</span>
+        <span id="tabNoticeText">Açık Nesine maçı tespit edildi!</span>
+      </div>
+      <button id="btnUseTabCode" class="btn-sm">Kullan</button>
+    </div>
+
+    <!-- Giriş Formu -->
+    <section class="form-section card">
+      <div class="input-group">
+        <label for="homeInput">Ev Sahibi Takım:</label>
+        <div class="input-wrapper">
+          <input type="text" id="homeInput" placeholder="Örn: Galatasaray, Liverpool..." autocomplete="off">
+          <button type="button" class="btn-clear" id="clearHome" title="Temizle">×</button>
+        </div>
+      </div>
+
+      <div class="input-group">
+        <label for="awayInput">Deplasman Takım:</label>
+        <div class="input-wrapper">
+          <input type="text" id="awayInput" placeholder="Örn: Fenerbahçe, Ipswich Town..." autocomplete="off">
+          <button type="button" class="btn-clear" id="clearAway" title="Temizle">×</button>
+        </div>
+      </div>
+
+      <div class="button-row">
+        <button id="btnFetchOdds" class="btn btn-primary">
+          <span class="btn-icon">⚡</span>
+          <span>Oranları Getir</span>
+        </button>
+        <button id="btnRefresh" class="btn btn-secondary" title="Bülteni Yeniden Yükle">
+          <span class="btn-icon">🔄</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- Durum / Hata Mesajları -->
+    <div id="statusContainer" class="status-container hidden">
+      <div id="statusMessage" class="status-message"></div>
+    </div>
+
+    <!-- Yükleniyor Göstergesi -->
+    <div id="loadingIndicator" class="loading-indicator hidden">
+      <div class="spinner"></div>
+      <span id="loadingText">Bülten taranıyor ve oranlar çekiliyor...</span>
+    </div>
+
+    <!-- Sonuç Bölümü -->
+    <main id="resultsContainer" class="results-container hidden">
+      <!-- Maç Başlığı -->
+      <div class="match-summary-card card">
+        <div class="match-header">
+          <h2 id="matchTitle" class="match-title">GALATASARAY - FENERBAHÇE</h2>
+          <span id="matchCodeBadge" class="badge badge-code">Kod: 3100797</span>
+        </div>
+        <div class="match-meta">
+          <span id="matchDateTime" class="match-meta-item">📅 04.09.2026 - 20:00</span>
+          <span id="matchConfidence" class="match-meta-item">🎯 %98 Eşleşme</span>
+        </div>
+        <div class="summary-actions">
+          <button id="btnExportAI" class="btn btn-ai" title="ChatGPT 5.6+ ve Multimodal AI modelleri için optimize edilmiş yüksek kaliteli PNG görselleri indirir">
+            <span class="btn-icon">📸</span>
+            <span>AI Görsellerini İndir (PNG)</span>
+          </button>
+          <button id="btnCopyAll" class="btn btn-copy">
+            <span class="btn-icon">📋</span>
+            <span>Tüm Oranları Kopyala</span>
+          </button>
+        </div>
+        
+        <!-- AI İndirme İlerleme Çubuğu -->
+        <div id="aiExportProgress" class="ai-progress-bar hidden">
+          <div class="ai-progress-text">
+            <span id="aiProgressTitle">Görseller oluşturuluyor...</span>
+            <span id="aiProgressCount">0/8</span>
+          </div>
+          <div class="ai-progress-track">
+            <div id="aiProgressFill" class="ai-progress-fill" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Accordion Kategori Listesi -->
+      <div id="categoriesAccordion" class="accordion-list">
+        <!-- Dinamik JS ile doldurulacak -->
+      </div>
+
+      <!-- GEÇMİŞ KARŞILAŞMALAR BÖLÜMÜ -->
+      <div id="historicalSection" class="historical-section card hidden">
+        <div class="historical-header">
+          <h2>GEÇMİŞ KARŞILAŞMALAR</h2>
+        </div>
+        
+        <div class="historical-filters">
+          <div class="filter-group">
+            <label for="filterYear">Yıl:</label>
+            <select id="filterYear">
+              <option value="all">Tümü</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="filterMonth">Ay:</label>
+            <select id="filterMonth">
+              <option value="all">Tümü</option>
+            </select>
+          </div>
+          <div class="filter-group">
+            <label for="filterOdds">Oran Durumu:</label>
+            <select id="filterOdds">
+              <option value="all">Tümü</option>
+              <option value="has_odds">Nesine oranı bulunanlar</option>
+              <option value="no_odds">Oran verisi bulunmayanlar</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="historicalMatchesContainer" class="historical-matches-container">
+          <!-- Geçmiş maçlar JS ile eklenecek -->
+        </div>
+      </div>
+    </main>
+
+    <!-- Debug Logları Paneli (Açılıp Kapanabilir) -->
+    <section id="debugPanel" class="debug-panel">
+      <div class="debug-header" id="debugHeader">
+        <span>🔍 Debug Konsol Logları</span>
+        <span id="debugToggleIcon">▼</span>
+      </div>
+      <div id="debugLogsContent" class="debug-content hidden">
+        <pre id="debugLogsText"></pre>
+      </div>
+    </section>
+
+    <!-- Toast Bildirimi -->
+    <div id="toast" class="toast hidden">Oranlar panoya kopyalandı!</div>
+  </div>
+
+  <script src="../lib/html2canvas.min.js"></script>
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
