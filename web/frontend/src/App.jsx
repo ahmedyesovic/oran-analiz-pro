@@ -4,6 +4,8 @@ import MatchResult from './components/MatchResult';
 import HistoricalFallback from './components/HistoricalFallback';
 import HistoricalMatches from './components/HistoricalMatches';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+
 function App() {
   const [matchData, setMatchData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -15,7 +17,7 @@ function App() {
     setMatchData(null);
 
     try {
-      const res = await fetch(`/api/fetch-match?home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`);
+      const res = await fetch(`${API_BASE_URL}/api/fetch-match?home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`);
       const data = await res.json();
       
       if (!res.ok || !data.success) {

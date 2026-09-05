@@ -27,6 +27,10 @@ if (fs.existsSync(frontendDist)) {
 
 app.use(express.json());
 
+app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+});
+
 // API Endpoint to fetch and parse match odds
 app.get('/api/fetch-match', async (req, res) => {
     function parseMatchInput(input) {
