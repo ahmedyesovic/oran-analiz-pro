@@ -193,6 +193,67 @@ export class MackolikScraper {
         return history;
     }
 
+    async findMackolikMatchesByDate(homeTeam, awayTeam, matchDate) {
+        const canonicalMatchDate = this.canonicalDate(matchDate);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(canonicalMatchDate)) return [];
+
+        const request = this.createAbortSignal(20000);
+        try {
+            const url = new URL('https://www.mackolik.com/perform/p0/ajax/components/competition/livescores/json');
+            url.searchParams.append('sports[]', 'Soccer');
+            url.searchParams.set('matchDate', canonicalMatchDate);
+
+            this.log(`Mackolik tarih listesi sorgulanıyor: ${canonicalMatchDate}`);
+            const response = await fetch(url, {
+                signal: request.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Referer': 'https://www.mackolik.com/canli-sonuclar'
+                }
+            });
+
+            if (!response.ok) {
+                this.log(`Mackolik tarih listesi HTTP ${response.status} döndürdü.`);
+                return [];
+            }
+
+            const payload = await response.json();
+            const matches = Object.values(payload?.data?.matches || {});
+            const [year, month, day] = canonicalMatchDate.split('-');
+
+            const results = matches
+                .filter(match => this.teamNamesMatch(match?.homeTeam?.name, homeTeam)
+                    && this.teamNamesMatch(match?.awayTeam?.name, awayTeam))
+                .map(match => {
+                    const matchId = match?.id;
+                    const matchSlug = match?.matchSlug
+                        || `${match?.homeTeam?.slug || ''}-vs-${match?.awayTeam?.slug || ''}`;
+                    if (!matchId || !matchSlug) return null;
+
+                    return {
+                        url: `https://www.mackolik.com/mac/${matchSlug}/iddaa/${matchId}`,
+                        title: `${match.matchName || `${homeTeam} vs ${awayTeam}`}, ${day}.${month}.${year}`
+                    };
+                })
+                .filter(Boolean);
+
+            if (results.length > 0) {
+                this.log(`Mackolik tarih listesinde ${results.length} eşleşme bulundu.`);
+            } else {
+                this.log('Mackolik tarih listesinde takım eşleşmesi bulunamadı.');
+            }
+
+            return results;
+        } catch (error) {
+            this.log(`Mackolik tarih listesi sorgusu başarısız: ${error.message}`);
+            return [];
+        } finally {
+            request.clear();
+        }
+    }
+
     async searchMackolikWithHttp(query) {
         const endpoints = [
             'https://html.duckduckgo.com/html/',
@@ -305,6 +366,20 @@ export class MackolikScraper {
             : (matchDate || '');
         const query = `site:mackolik.com ${homeTeam} ${awayTeam} mac detay ${searchDate}`;
         const triedUrls = new Set();
+        const dateResults = await this.findMackolikMatchesByDate(
+            homeTeam,
+            awayTeam,
+            canonicalMatchDate
+        );
+        const dateResult = await this.tryHttpCandidates(
+            dateResults,
+            homeTeam,
+            awayTeam,
+            canonicalMatchDate,
+            triedUrls
+        );
+        if (dateResult) return dateResult;
+
         const httpResults = await this.searchMackolikWithHttp(query);
         const httpResult = await this.tryHttpCandidates(
             httpResults,
