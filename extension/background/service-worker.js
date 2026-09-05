@@ -163,6 +163,8 @@ async function handleFetchMatchOdds(message) {
                         C: m.C,
                         HN: m.HT,
                         AN: m.AT,
+                        homeAliases: [m.HT, m.HTTR].filter(Boolean),
+                        awayAliases: [m.AT, m.ATTR].filter(Boolean),
                         TYPE: 1,
                         D: m.D
                     }));

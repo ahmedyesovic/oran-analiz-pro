@@ -4,6 +4,10 @@ import * as cheerio from 'cheerio';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { categorizeMarket, MAIN_CATEGORIES } from './marketCategorizer.js';
+import {
+    normalizeTeamName as normalizeSharedTeamName,
+    teamNamesMatch as sharedTeamNamesMatch
+} from '../../utils/normalize.js';
 
 puppeteer.use(StealthPlugin());
 
@@ -123,30 +127,38 @@ export class MackolikScraper {
         return raw;
     }
 
+    getRecentDateCandidates(daysBack = 7, referenceDate = new Date()) {
+        const formatter = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Europe/Istanbul',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        });
+        const parts = Object.fromEntries(
+            formatter.formatToParts(referenceDate)
+                .filter(part => part.type !== 'literal')
+                .map(part => [part.type, part.value])
+        );
+        const anchorUtc = Date.UTC(
+            Number(parts.year),
+            Number(parts.month) - 1,
+            Number(parts.day),
+            12
+        );
+
+        return Array.from({ length: daysBack + 1 }, (_, index) =>
+            new Date(anchorUtc - (index * 24 * 60 * 60 * 1000))
+                .toISOString()
+                .slice(0, 10)
+        );
+    }
+
     normalizeTeamName(value) {
-        return String(value || '')
-            .toLocaleLowerCase('tr-TR')
-            .replace(/ı/g, 'i')
-            .replace(/ğ/g, 'g')
-            .replace(/ü/g, 'u')
-            .replace(/ş/g, 's')
-            .replace(/ö/g, 'o')
-            .replace(/ç/g, 'c')
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]+/g, ' ')
-            .trim();
+        return normalizeSharedTeamName(value);
     }
 
     teamNamesMatch(actual, expected) {
-        const normalizedActual = this.normalizeTeamName(actual);
-        const normalizedExpected = this.normalizeTeamName(expected);
-        if (!normalizedActual || !normalizedExpected) return false;
-        if (normalizedActual === normalizedExpected) return true;
-
-        const actualTokens = new Set(normalizedActual.split(' ').filter(token => token.length >= 3));
-        const expectedTokens = normalizedExpected.split(' ').filter(token => token.length >= 3);
-        return expectedTokens.some(token => actualTokens.has(token));
+        return sharedTeamNamesMatch(actual, expected);
     }
 
     matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate) {
@@ -366,19 +378,29 @@ export class MackolikScraper {
             : (matchDate || '');
         const query = `site:mackolik.com ${homeTeam} ${awayTeam} mac detay ${searchDate}`;
         const triedUrls = new Set();
-        const dateResults = await this.findMackolikMatchesByDate(
-            homeTeam,
-            awayTeam,
-            canonicalMatchDate
-        );
-        const dateResult = await this.tryHttpCandidates(
-            dateResults,
-            homeTeam,
-            awayTeam,
-            canonicalMatchDate,
-            triedUrls
-        );
-        if (dateResult) return dateResult;
+        const dateCandidates = dateParts
+            ? [canonicalMatchDate]
+            : this.getRecentDateCandidates(7);
+
+        // Tarih Nesine'den çözülemese bile Mackolik günlük listelerini doğrudan
+        // tara. Üçlü gruplar gecikmeyi sınırlarken sağlayıcıya aşırı yük bindirmez.
+        for (let offset = 0; offset < dateCandidates.length; offset += 3) {
+            const dateBatch = dateCandidates.slice(offset, offset + 3);
+            const batchResults = await Promise.all(
+                dateBatch.map(date => this.findMackolikMatchesByDate(homeTeam, awayTeam, date))
+            );
+
+            for (let index = 0; index < batchResults.length; index++) {
+                const dateResult = await this.tryHttpCandidates(
+                    batchResults[index],
+                    homeTeam,
+                    awayTeam,
+                    dateBatch[index],
+                    triedUrls
+                );
+                if (dateResult) return dateResult;
+            }
+        }
 
         const httpResults = await this.searchMackolikWithHttp(query);
         const httpResult = await this.tryHttpCandidates(

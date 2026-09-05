@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node web/server.js",
     "build": "cd web/frontend && npm install && npm run build",
-    "install:all": "cd web && npm install && cd frontend && npm install"
+    "install:all": "cd web && npm install && cd frontend && npm install",
+    "test:historical": "node --test web/tests/historicalResolution.test.js"
   },
   "dependencies": {
     "cheerio": "^1.2.0",

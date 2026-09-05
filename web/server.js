@@ -154,6 +154,8 @@ app.get('/api/fetch-match', async (req, res) => {
                                 C: m.C,
                                 HN: m.HT,
                                 AN: m.AT,
+                                homeAliases: [m.HT, m.HTTR].filter(Boolean),
+                                awayAliases: [m.AT, m.ATTR].filter(Boolean),
                                 TYPE: 1, // Treat as football
                                 D: m.D
                             }));

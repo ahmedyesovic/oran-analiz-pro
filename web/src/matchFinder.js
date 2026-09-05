@@ -2,7 +2,7 @@
  * Nesine Bülteni İçinde Maç Bulma Motoru (Match Finder) - SADE
  */
 
-import { normalize } from '../../utils/normalize.js';
+import { normalize, teamNamesMatch } from '../../utils/normalize.js';
 
 export class MatchFinder {
   constructor(options = {}) {
@@ -13,6 +13,19 @@ export class MatchFinder {
     if (this.debug) {
       console.log(`[${tag}] ${msg}`);
     }
+  }
+
+  getTeamAliases(match, primaryKey, aliasesKey) {
+    const aliases = [match?.[primaryKey]];
+    if (Array.isArray(match?.[aliasesKey])) {
+      aliases.push(...match[aliasesKey]);
+    }
+    return [...new Set(aliases.filter(Boolean))];
+  }
+
+  teamMatches(match, queryName, primaryKey, aliasesKey) {
+    return this.getTeamAliases(match, primaryKey, aliasesKey)
+      .some(candidateName => teamNamesMatch(candidateName, queryName));
   }
 
   findMatch(eventsArray, query = {}) {
@@ -64,9 +77,10 @@ export class MatchFinder {
         };
       }
       
-      // Substring eşleşmesi (Basit - exact çalışmazsa)
-      if (matchHome.includes(userHome) && matchAway.includes(userAway)) {
-        this.log('3', `Candidate (Substring):\n${match.HN} - ${match.AN}`);
+      // Sağlayıcılar arasındaki takım adı varyasyonlarını eşleştir.
+      if (this.teamMatches(match, home, 'HN', 'homeAliases')
+          && this.teamMatches(match, away, 'AN', 'awayAliases')) {
+        this.log('3', `Candidate (Normalized):\n${match.HN} - ${match.AN}`);
         this.log('4', `MATCH FOUND`);
         this.log('5', `MATCH ID\n${match.C}`);
         return {
@@ -83,7 +97,9 @@ export class MatchFinder {
       const matchHome = normalize(match.HN);
       const matchAway = normalize(match.AN);
 
-      if (userHome === matchAway && userAway === matchHome) {
+      if ((userHome === matchAway && userAway === matchHome)
+          || (this.teamMatches(match, home, 'AN', 'awayAliases')
+            && this.teamMatches(match, away, 'HN', 'homeAliases'))) {
         this.log('3', `Candidate (Reversed):\n${match.HN} - ${match.AN}`);
         this.log('4', `MATCH FOUND`);
         this.log('5', `MATCH ID\n${match.C}`);
