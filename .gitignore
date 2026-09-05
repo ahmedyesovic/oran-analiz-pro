@@ -30,3 +30,6 @@ testMatchFinder.js
 
 # PNG exports (geçici)
 web/*.png
+
+# Local Netlify folder
+.netlify/
