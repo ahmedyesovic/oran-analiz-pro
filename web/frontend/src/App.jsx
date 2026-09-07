@@ -1,36 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import MatchSearch from './components/MatchSearch';
 import MatchResult from './components/MatchResult';
 import HistoricalFallback from './components/HistoricalFallback';
 import HistoricalMatches from './components/HistoricalMatches';
+import ThemeSelector from './components/ThemeSelector';
+import { createMatchRequests } from './utils/matchRequests';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const API_BASE_URL = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 function App() {
-  const [matchData, setMatchData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-
-  const handleSearch = async (home, away) => {
-    setLoading(true);
-    setError(null);
-    setMatchData(null);
-
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/fetch-match?home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`);
-      const data = await res.json();
-      
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || data.message || 'Maç bulunamadı.');
-      }
-      
-      setMatchData(data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [{ data: matchData, loading, error }, setMatchState] = useState({ data: null, loading: false, error: null });
+  const [{ data: h2h, loading: h2hLoading, error: h2hError }, setHistoryState] = useState({ data: null, loading: false, error: null });
+  const [selection, setSelection] = useState(null);
+  const [requests] = useState(() => createMatchRequests({
+    apiBaseUrl: API_BASE_URL, onMatch: setMatchState, onHistory: setHistoryState, onSelection: setSelection
+  }));
+  useEffect(() => () => requests.dispose(), [requests]);
 
   return (
     <>
@@ -40,7 +25,8 @@ function App() {
         <div className="blob blob-3"></div>
       </div>
 
-      <main style={{ maxWidth: '960px', margin: '0 auto', padding: '3rem 1.5rem', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+      <main className="app-shell">
+        <div className="app-toolbar"><ThemeSelector /></div>
         <header style={{ textAlign: 'center' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -51,29 +37,38 @@ function App() {
             <h1 style={{ fontSize: '2.5rem', fontWeight: 800, letterSpacing: '-0.5px' }}>Oran Analiz Pro</h1>
           </div>
           <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
-            Canlı Nesine Bülteninden yapay zeka destekli takım eşleştirme ve oran çıkarma sistemi.
+            Güncel Nesine oranları, geçmiş karşılaşmalar ve Sahadan maç arşivi.
           </p>
         </header>
 
-        <MatchSearch onSearch={handleSearch} loading={loading} />
+        <div className={`match-workspace${selection ? ' match-workspace--with-history' : ''}`}>
+          <div className="match-main">
+            <MatchSearch onSearch={(home, away, options) => requests.searchPair(home, away, options)}
+              onClear={() => requests.clear()} loading={loading} selection={selection} />
 
-        {error && (
-          <div className="animate-fade-in" style={{ background: 'rgba(239, 68, 68, 0.15)', border: '1px solid var(--error)', color: '#fca5a5', padding: '1rem 1.25rem', borderRadius: '0.75rem', textAlign: 'center', fontWeight: 500 }}>
-            {error}
+            {error && (
+              <div className="animate-fade-in" style={{ background: 'var(--error-bg)', border: '1px solid var(--error)', color: 'var(--error-text)', padding: '1rem 1.25rem', borderRadius: '0.75rem', textAlign: 'center', fontWeight: 500 }}>
+                {error}
+              </div>
+            )}
+
+            {matchData && !matchData.hasOdds && (
+              <HistoricalFallback message={matchData.historicalMessage} />
+            )}
+
+            {matchData?.warnings?.map(warning => <p key={warning} role="status">{warning}</p>)}
+            {matchData?.hasOdds && (
+              <MatchResult key={`${matchData.dataSource}-${matchData.matchCode}-${matchData.matchDate}`} data={matchData} />
+            )}
           </div>
-        )}
 
-        {matchData && matchData.isHistorical && !matchData.hasOdds && (
-          <HistoricalFallback message={matchData.historicalMessage} />
-        )}
-
-        {matchData && (!matchData.isHistorical || matchData.hasOdds) && (
-          <MatchResult data={matchData} />
-        )}
-
-        {matchData?.history && (
-          <HistoricalMatches historyData={matchData.history} onSelectMatch={handleSearch} />
-        )}
+          {selection && (
+            <aside className="match-sidebar" aria-label="Geçmiş karşılaşmalar">
+              <HistoricalMatches data={h2h} loading={h2hLoading} error={h2hError} selectedMatchId={selection.matchId}
+                onSelectMatch={match => requests.selectMatch(match, selection.source)} />
+            </aside>
+          )}
+        </div>
       </main>
     </>
   );

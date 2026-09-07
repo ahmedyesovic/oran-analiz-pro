@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Calendar, Download, Copy, Check, ChevronDown, ChevronUp, Image, Layers, ShieldCheck } from 'lucide-react';
+import { Calendar, Download, Copy, Check, ChevronDown, ChevronUp, Image, ShieldCheck } from 'lucide-react';
 import { 
   exportAllCategoriesAsPNG, 
   createCategoryExportElement, 
@@ -11,10 +11,13 @@ import {
 import { formatOddsForClipboard, copyToClipboard } from '../utils/helpers';
 
 export default function MatchResult({ data }) {
-  if (!data || !data.match) return null;
-
-  const { match, markets = {}, isHistorical, oddsProvider, dataSource } = data;
-  const categoriesList = Object.entries(markets || {});
+  const { match, isHistorical, oddsProvider, dataSource } = data || {};
+  // Use the same visible categories for the screen, clipboard and PNG exports.
+  const markets = Object.fromEntries(Object.entries(data?.markets || {}).filter(([category]) =>
+    isHistorical !== true || category.trim().toLocaleUpperCase('tr-TR') !== 'KORNER & KART'
+  ));
+  const categoriesList = Object.entries(markets);
+  const hasVisibleCategories = categoriesList.length > 0;
 
   // Açık olan akordeon sekmelerinin state'i (ilk kategori varsayılan açık)
   const [openCategories, setOpenCategories] = useState(() => {
@@ -26,9 +29,12 @@ export default function MatchResult({ data }) {
   });
 
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(null);
   const [exportingAll, setExportingAll] = useState(false);
   const [exportProgress, setExportProgress] = useState(null); // { current, total, categoryName }
   const [exportingSingle, setExportingSingle] = useState({}); // { [catName]: true/false }
+
+  if (!match) return null;
 
   const toggleCategory = (catName) => {
     setOpenCategories(prev => ({
@@ -38,16 +44,19 @@ export default function MatchResult({ data }) {
   };
 
   const handleCopy = async () => {
-    const text = formatOddsForClipboard(data);
+    if (!hasVisibleCategories) return;
+    setCopyError(null);
+    // Historical copy must not restore a hidden category through formattedMarkets.
+    const text = formatOddsForClipboard(isHistorical === true ? { markets } : data);
     const success = await copyToClipboard(text || 'Geçerli oran bulunamadı.');
     if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    }
+    } else setCopyError('Panoya kopyalanamadı. Tarayıcı pano iznini kontrol edip tekrar deneyin.');
   };
 
   const handleExportAll = async () => {
-    if (exportingAll) return;
+    if (exportingAll || !hasVisibleCategories) return;
     setExportingAll(true);
     setExportProgress({ current: 0, total: 8, categoryName: 'Başlatılıyor...' });
 
@@ -76,9 +85,10 @@ export default function MatchResult({ data }) {
     }
   };
 
-  const handleExportSingle = async (e, catName, catMarkets) => {
+  const handleExportSingle = async (e, catName) => {
     e.stopPropagation();
-    if (exportingSingle[catName]) return;
+    const catMarkets = markets[catName];
+    if (!catMarkets || exportingSingle[catName]) return;
 
     setExportingSingle(prev => ({ ...prev, [catName]: true }));
 
@@ -104,6 +114,7 @@ export default function MatchResult({ data }) {
 
   return (
     <section className="glass-panel animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '1.75rem' }}>
+      {copyError && <p role="alert" style={{ color: 'var(--error)' }}>{copyError}</p>}
       
       {/* Üst Bilgi Kartı */}
       <div className="glass-card" style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', alignItems: 'center', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
@@ -111,11 +122,11 @@ export default function MatchResult({ data }) {
         {/* Rozetler */}
         <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center' }}>
           {isHistorical ? (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24', border: '1px solid rgba(245, 158, 11, 0.3)', padding: '0.3rem 0.75rem', borderRadius: '9999px', fontSize: '0.8rem', fontWeight: 600 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', background: 'var(--warning-badge-bg)', color: 'var(--warning-badge-text)', border: '1px solid var(--warning-border)', padding: '0.3rem 0.75rem', borderRadius: '9999px', fontSize: '0.8rem', fontWeight: 600 }}>
               <ShieldCheck size={14} /> Geçmiş Arşiv • {dataSource || 'Mackolik'} ({oddsProvider || 'Nesine'})
             </span>
           ) : (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '0.3rem 0.75rem', borderRadius: '9999px', fontSize: '0.8rem', fontWeight: 600 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', background: 'var(--accent-light)', color: 'var(--accent)', border: '1px solid var(--accent-border-soft)', padding: '0.3rem 0.75rem', borderRadius: '9999px', fontSize: '0.8rem', fontWeight: 600 }}>
               ● Canlı Nesine Bülteni
             </span>
           )}
@@ -143,7 +154,7 @@ export default function MatchResult({ data }) {
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
         <button 
           onClick={handleExportAll}
-          disabled={exportingAll}
+          disabled={exportingAll || !hasVisibleCategories}
           style={{ 
             flex: 1, 
             minWidth: '220px',
@@ -152,11 +163,12 @@ export default function MatchResult({ data }) {
             alignItems: 'center', 
             justifyContent: 'center', 
             gap: '0.6rem', 
-            background: exportingAll ? 'rgba(16, 185, 129, 0.2)' : 'rgba(16, 185, 129, 0.12)', 
+            background: exportingAll ? 'var(--accent-strong)' : 'var(--accent-soft)',
             color: 'var(--accent)', 
             border: '1px solid var(--accent)', 
             borderRadius: '0.75rem', 
-            cursor: exportingAll ? 'wait' : 'pointer', 
+            cursor: !hasVisibleCategories ? 'not-allowed' : exportingAll ? 'wait' : 'pointer',
+            opacity: hasVisibleCategories ? 1 : 0.5,
             fontWeight: 600, 
             transition: 'all 0.2s',
             fontSize: '0.95rem'
@@ -168,6 +180,7 @@ export default function MatchResult({ data }) {
 
         <button 
           onClick={handleCopy}
+          disabled={!hasVisibleCategories}
           style={{ 
             flex: 1, 
             minWidth: '200px',
@@ -176,11 +189,12 @@ export default function MatchResult({ data }) {
             alignItems: 'center', 
             justifyContent: 'center', 
             gap: '0.6rem', 
-            background: copied ? 'rgba(16, 185, 129, 0.15)' : 'rgba(255, 255, 255, 0.05)', 
+            background: copied ? 'var(--accent-light)' : 'var(--neutral-soft)',
             color: copied ? 'var(--accent)' : 'var(--text-primary)', 
             border: copied ? '1px solid var(--accent)' : '1px solid var(--panel-border)', 
             borderRadius: '0.75rem', 
-            cursor: 'pointer', 
+            cursor: hasVisibleCategories ? 'pointer' : 'not-allowed',
+            opacity: hasVisibleCategories ? 1 : 0.5,
             fontWeight: 600, 
             transition: 'all 0.2s',
             fontSize: '0.95rem'
@@ -192,12 +206,12 @@ export default function MatchResult({ data }) {
 
       {/* AI Export İlerleme Çubuğu */}
       {exportProgress && (
-        <div className="glass-card animate-fade-in" style={{ padding: '1rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'rgba(16, 185, 129, 0.08)', border: '1px solid var(--accent)' }}>
+        <div className="glass-card animate-fade-in" style={{ padding: '1rem 1.25rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', background: 'var(--accent-subtle)', border: '1px solid var(--accent)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', fontWeight: 600, color: 'var(--accent)' }}>
             <span>{exportProgress.categoryName} hazırlanıyor...</span>
             <span>{exportProgress.current} / {exportProgress.total}</span>
           </div>
-          <div style={{ width: '100%', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+          <div style={{ width: '100%', height: '6px', background: 'var(--progress-track)', borderRadius: '3px', overflow: 'hidden' }}>
             <div style={{ width: `${Math.round((exportProgress.current / exportProgress.total) * 100)}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.3s ease' }} />
           </div>
         </div>
@@ -207,7 +221,7 @@ export default function MatchResult({ data }) {
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         {categoriesList.length === 0 ? (
           <div className="glass-card" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-            Geçerli oran verisi bulunamadı.
+            Gösterilecek oran bulunmuyor.
           </div>
         ) : (
           categoriesList.map(([catName, catMarkets]) => {
@@ -222,7 +236,7 @@ export default function MatchResult({ data }) {
                 style={{ 
                   borderRadius: '0.75rem', 
                   overflow: 'hidden', 
-                  border: isOpen ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid var(--panel-border)',
+                  border: isOpen ? '1px solid var(--accent-border-open)' : '1px solid var(--panel-border)',
                   transition: 'all 0.2s'
                 }}
               >
@@ -235,7 +249,7 @@ export default function MatchResult({ data }) {
                     justifyContent: 'space-between', 
                     alignItems: 'center', 
                     cursor: 'pointer',
-                    background: isOpen ? 'rgba(255, 255, 255, 0.04)' : 'transparent',
+                    background: isOpen ? 'var(--neutral-subtle)' : 'transparent',
                     userSelect: 'none'
                   }}
                 >
@@ -246,7 +260,7 @@ export default function MatchResult({ data }) {
                     <span style={{ 
                       fontSize: '0.75rem', 
                       padding: '0.2rem 0.5rem', 
-                      background: 'rgba(255, 255, 255, 0.08)', 
+                      background: 'var(--neutral-bg)',
                       borderRadius: '9999px', 
                       color: 'var(--text-secondary)',
                       fontWeight: 500
@@ -258,11 +272,11 @@ export default function MatchResult({ data }) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     {marketEntries.length > 0 && (
                       <button
-                        onClick={(e) => handleExportSingle(e, catName, catMarkets)}
+                        onClick={(e) => handleExportSingle(e, catName)}
                         disabled={isSingleLoading}
                         title={`${catName} PNG İndir`}
                         style={{
-                          background: 'rgba(255, 255, 255, 0.08)',
+                          background: 'var(--neutral-bg)',
                           border: 'none',
                           color: isSingleLoading ? 'var(--accent)' : 'var(--text-secondary)',
                           padding: '0.35rem 0.6rem',
@@ -275,8 +289,8 @@ export default function MatchResult({ data }) {
                           fontWeight: 500,
                           transition: 'all 0.15s'
                         }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(16, 185, 129, 0.2)'; e.currentTarget.style.color = 'var(--accent)'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.08)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-strong)'; e.currentTarget.style.color = 'var(--accent)'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--neutral-bg)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
                       >
                         <Image size={14} />
                         <span>{isSingleLoading ? '⏳' : 'PNG'}</span>
@@ -288,7 +302,7 @@ export default function MatchResult({ data }) {
 
                 {/* Açılır Gövde */}
                 {isOpen && (
-                  <div style={{ padding: '1rem 1.25rem', borderTop: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column', gap: '1rem', background: 'rgba(0, 0, 0, 0.2)' }}>
+                  <div style={{ padding: '1rem 1.25rem', borderTop: '1px solid var(--panel-border)', display: 'flex', flexDirection: 'column', gap: '1rem', background: 'var(--inset-bg)' }}>
                     {marketEntries.length === 0 ? (
                       <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'center' }}>
                         Bu kategoride açık oran bulunamadı.
@@ -305,7 +319,7 @@ export default function MatchResult({ data }) {
                               <div 
                                 key={oIdx} 
                                 style={{ 
-                                  background: 'rgba(15, 23, 42, 0.7)', 
+                                  background: 'var(--odds-bg)',
                                   border: '1px solid var(--panel-border)', 
                                   borderRadius: '0.5rem', 
                                   padding: '0.5rem 0.75rem', 

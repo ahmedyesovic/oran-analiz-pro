@@ -1,7 +1,17 @@
 <!doctype html>
-<html lang="tr">
+<html lang="tr" data-theme="default">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      (() => {
+        let theme = 'default';
+        try {
+          const saved = localStorage.getItem('oran-analiz-theme');
+          if (['default', 'black', 'white'].includes(saved)) theme = saved;
+        } catch {}
+        document.documentElement.setAttribute('data-theme', theme);
+      })();
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Oran Analiz Pro</title>

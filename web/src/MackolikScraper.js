@@ -4,6 +4,8 @@ import * as cheerio from 'cheerio';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { categorizeMarket, MAIN_CATEGORIES } from './marketCategorizer.js';
+import { nesineLink, sameTeam } from './sahadanParser.js';
+import { SourceError, sourceText } from './sourceHttp.js';
 import {
     normalizeTeamName as normalizeSharedTeamName,
     teamNamesMatch as sharedTeamNamesMatch
@@ -158,20 +160,20 @@ export class MackolikScraper {
     }
 
     teamNamesMatch(actual, expected) {
-        return sharedTeamNamesMatch(actual, expected);
+        return sameTeam(actual, expected);
     }
 
     matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate) {
         const expectedDate = this.canonicalDate(matchDate);
         const actualDate = this.canonicalDate(parsed?.matchDate);
-        if (expectedDate && actualDate && expectedDate !== actualDate) return false;
+        if (!actualDate || (expectedDate && expectedDate !== actualDate)) return false;
 
         if (parsed?.homeTeam && parsed?.awayTeam) {
             return this.teamNamesMatch(parsed.homeTeam, homeTeam)
                 && this.teamNamesMatch(parsed.awayTeam, awayTeam);
         }
 
-        return true;
+        return false;
     }
 
     buildHistory(searchResults, homeTeam, awayTeam) {
@@ -329,9 +331,11 @@ export class MackolikScraper {
     }
 
     async tryHttpCandidates(searchResults, homeTeam, awayTeam, matchDate, triedUrls) {
-        const history = this.buildHistory(searchResults, homeTeam, awayTeam);
-
-        for (const item of searchResults.slice(0, 8)) {
+        const sorted = [...searchResults].sort((a, b) => {
+            const date = item => this.canonicalDate(item.title.match(/\d{2}\.\d{2}\.\d{4}/)?.[0]);
+            return date(b).localeCompare(date(a));
+        });
+        for (const item of sorted.slice(0, 8)) {
             const finalIddaaUrl = this.toIddaaUrl(item.url);
             if (!finalIddaaUrl || triedUrls.has(finalIddaaUrl)) continue;
             triedUrls.add(finalIddaaUrl);
@@ -339,20 +343,10 @@ export class MackolikScraper {
             const request = this.createAbortSignal(25000);
             try {
                 this.log(`Doğrudan Mackolik sayfası deneniyor: ${finalIddaaUrl}`);
-                const response = await fetch(finalIddaaUrl, {
-                    signal: request.signal,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
-                    }
-                });
-
-                if (!response.ok) continue;
-                const parsed = this.parseMackolikIddaa(await response.text(), finalIddaaUrl);
+                const html = await sourceText(finalIddaaUrl, { source: 'mackolik', ttl: 300000 });
+                const parsed = this.parseMackolikIddaa(html, finalIddaaUrl);
                 if (!parsed || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate)) continue;
-
-                parsed.history = history;
+                if (!parsed.score) continue;
                 this.log('Mackolik oranları tarayıcısız olarak bulundu.');
                 return parsed;
             } catch (error) {
@@ -368,8 +362,23 @@ export class MackolikScraper {
     /**
      * İki takımın geçmiş maçını bulur ve oranlarını getirir.
      */
-    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null) {
+    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null, matchId = null) {
         this.log(`Taranıyor: ${homeTeam} vs ${awayTeam} ${matchDate ? '(' + matchDate + ')' : ''}`);
+
+        // H2H selection already supplies the stable provider ID. Open that page
+        // directly instead of rediscovering an old match through search engines.
+        if (matchId) {
+            if (!/^[a-z0-9]{1,64}$/.test(matchId) || !matchDate) throw new SourceError('Geçersiz geçmiş maç seçimi.', 400);
+            const slug = `${this.normalizeTeamName(homeTeam)} vs ${this.normalizeTeamName(awayTeam)}`.replaceAll(' ', '-');
+            const url = `https://www.mackolik.com/mac/${slug}/iddaa/${matchId}`;
+            const html = await sourceText(url, { source: 'mackolik', ttl: 300000 });
+            const parsed = this.parseMackolikIddaa(html, url);
+            if (parsed.matchId !== matchId || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate) || !parsed.score) {
+                throw new SourceError('Seçilen Mackolik maçının kimlik, takım, tarih veya sonuç bilgisi doğrulanamadı.');
+            }
+            this.log(`Seçilen maç doğrudan kimliğiyle doğrulandı: ${matchId}`);
+            return parsed;
+        }
 
         const canonicalMatchDate = this.canonicalDate(matchDate);
         const dateParts = canonicalMatchDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -460,38 +469,20 @@ export class MackolikScraper {
             return null;
         } finally {
             if (page) await page.close();
+            await this.closeBrowser();
         }
     }
 
     detectMarketProvider(el, $) {
-        let provider = null;
-        $(el).find('.widget-iddaa-markets__link').each((_, a) => {
-            const mobileHref = $(a).attr('data-mobile-href') || $(a).attr('href') || '';
-            const lower = mobileHref.toLowerCase();
-            if (lower.includes('nesine')) {
-                provider = 'nesine';
-                return false;
-            }
-            if (lower.includes('oley')) {
-                provider = 'oley';
-                return false;
-            }
-        });
-
-        if (!provider) {
-            const marketNo = $(el).attr('data-market-no') || '';
-            const marketId = $(el).attr('data-market-id') || '';
-            if (marketNo && marketNo !== marketId && marketNo.length <= 5) {
-                provider = 'nesine';
-            }
-        }
-
-        return provider;
+        return $(el).find('a').toArray().some(a =>
+            nesineLink($(a).attr('data-mobile-href')) || nesineLink($(a).attr('href'))
+        ) ? 'nesine' : null;
     }
 
     parseMackolikIddaa(html, matchUrl = '') {
         const $ = cheerio.load(html);
         const oddsData = {};
+        const providerEvidence = [];
         let nesineMarketCount = 0;
         
         $('.widget-iddaa-markets__market-item').each((i, el) => {
@@ -514,26 +505,34 @@ export class MackolikScraper {
             }
 
             let optionCount = 0;
-            $(el).find('.widget-iddaa-markets__option').each((j, out) => {
+            const lists = $(el).find('.widget-iddaa-markets__option-list').toArray();
+            const verifiedLists = lists.length ? lists.filter(list => this.detectMarketProvider(list, $) === 'nesine') : [el];
+            $(verifiedLists).find('.widget-iddaa-markets__option').each((j, out) => {
                 const name = $(out).find('.widget-iddaa-markets__label').text().trim();
                 const odd = $(out).find('.widget-iddaa-markets__value').text().trim();
                 
                 // "-" olan veya boş olan oranları atla
-                if (name && odd && odd !== '-') {
-                    oddsData[category][marketName][name] = odd;
+                const value = Number(odd.replace(',', '.'));
+                if (name && Number.isFinite(value) && value > 1) {
+                    oddsData[category][marketName][name] = value.toFixed(2);
                     optionCount++;
                 }
             });
 
             if (optionCount > 0) {
                 nesineMarketCount++;
+                $(verifiedLists).find('a').each((_, a) => {
+                    const link = $(a).attr('data-mobile-href') || $(a).attr('href');
+                    if (nesineLink(link) && !providerEvidence.length) providerEvidence.push({ url: link });
+                });
+            } else {
+                delete oddsData[category][marketName];
             }
         });
 
-        // Eğer hiçbir Nesine oranı bulunamadıysa null dön
+        // Keep verified match details even when there are no Nesine odds.
         if (nesineMarketCount === 0 || Object.keys(oddsData).length === 0) {
             this.log('Mackolik İddaa sayfasında doğrulanmış Nesine oranı bulunamadı.');
-            return null;
         }
 
         // 8 Ana kategori sırasına göre sıralı nesne oluştur
@@ -553,9 +552,12 @@ export class MackolikScraper {
         
         // Maç kodunu ve tarihini sayfadan çek
         let matchCode = null;
-        $('.widget-iddaa-markets__link').each((_, a) => {
+        $('.widget-iddaa-markets__market-item a').each((_, a) => {
             const href = $(a).attr('data-mobile-href') || $(a).attr('href') || '';
-            const m = href.match(/utm_content=(\d+)/) || href.match(/e=(\d+)-/);
+            if (!nesineLink(href)) return;
+            let decoded = href;
+            try { decoded = decodeURIComponent(href); } catch { /* keep original URL */ }
+            const m = decoded.match(/utm_content=(\d+)/) || decoded.match(/e=(\d+)-/) || decoded.match(/code=(\d+)/);
             if (m) {
                 matchCode = parseInt(m[1], 10);
                 return false;
@@ -585,25 +587,31 @@ export class MackolikScraper {
         let score = null;
         const hScore = $('.p0c-soccer-match-details-header__score-home').text().trim();
         const aScore = $('.p0c-soccer-match-details-header__score-away').text().trim();
-        if (hScore && aScore) {
+        if (/^\d+$/.test(hScore) && /^\d+$/.test(aScore)) {
             score = `${hScore} - ${aScore}`;
         }
 
+        const canonicalUrl = this.normalizeSearchResultUrl($('link[rel="canonical"]').attr('href'));
+        const canonicalIddaaUrl = canonicalUrl ? this.toIddaaUrl(canonicalUrl) : null;
+        const matchId = canonicalIddaaUrl ? new URL(canonicalIddaaUrl).pathname.split('/').pop() : null;
+
         return {
             sourceUrl: matchUrl,
-            oddsProvider: 'nesine',
+            matchId,
+            oddsProvider: nesineMarketCount ? 'nesine' : null,
+            providerEvidence,
             dataSource: 'mackolik',
             matchCode: matchCode,
             matchDate: matchDate,
             homeTeam: homeTeam,
             awayTeam: awayTeam,
             score: score,
-            providers: [
+            providers: nesineMarketCount ? [
                 { 
                     name: 'nesine', 
                     odds: sortedOddsData 
                 }
-            ]
+            ] : []
         };
     }
 }
