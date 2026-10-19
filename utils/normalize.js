@@ -45,6 +45,44 @@ export function normalizeTeamName(value) {
     .trim();
 }
 
+const TEAM_ALIASES = new Map([
+    ['manchester city', 'manchester city'],
+    ['man city', 'manchester city'],
+    ['athletic bilbao', 'athletic bilbao'],
+    ['bilbao', 'athletic bilbao'],
+    ['ath bilbao', 'athletic bilbao'],
+    ['a bilbao', 'athletic bilbao'],
+    ['athletic de bilbao', 'athletic bilbao']
+]);
+
+function teamIdentity(value) {
+    const qualifiers = new Set();
+    const rawName = (typeof value === 'string' ? value.trim() : '').replace(/\(\s*([bk])\s*\)/gi, (_, token) => {
+        qualifiers.add(token.toLowerCase() === 'k' ? 'women' : 'b');
+        return ' ';
+    });
+    const name = normalizeTeamName(rawName).replace(
+        /\b(?:u\s?\d{1,2}|ii|iii|iv|kadin|women(?: s|s)?|ladies|res|reserve|reserves)\b/g,
+        token => {
+            if (/^(?:kadin|women(?: s|s)?|ladies)$/.test(token)) qualifiers.add('women');
+            else if (/^(?:res|reserve|reserves)$/.test(token)) qualifiers.add('reserves');
+            else qualifiers.add(token.replaceAll(' ', ''));
+            return ' ';
+        }
+    ).replace(/\s+/g, ' ').trim().replace(/(?:\s+[bk])+$/, suffix => {
+        for (const token of suffix.trim().split(/\s+/)) {
+            qualifiers.add(token === 'k' ? 'women' : 'b');
+        }
+        return '';
+    });
+    return { name, qualifiers: [...qualifiers].sort().join(' ') };
+}
+
+function knownTeam(value) {
+    const name = value.split(' ').filter(token => !TEAM_NAME_NOISE_TOKENS.has(token)).join(' ');
+    return TEAM_ALIASES.get(name);
+}
+
 function meaningfulTeamTokens(value) {
   return normalizeTeamName(value)
     .split(' ')
@@ -76,8 +114,11 @@ function isAcronymOf(shortName, longTokens) {
  * kontrollü biçimde eşleştirir.
  */
 export function teamNamesMatch(left, right) {
-  const normalizedLeft = normalizeTeamName(left);
-  const normalizedRight = normalizeTeamName(right);
+  const leftIdentity = teamIdentity(left);
+  const rightIdentity = teamIdentity(right);
+  if (leftIdentity.qualifiers !== rightIdentity.qualifiers) return false;
+  const normalizedLeft = leftIdentity.name;
+  const normalizedRight = rightIdentity.name;
   if (!normalizedLeft || !normalizedRight) return false;
   if (normalizedLeft === normalizedRight) return true;
 
@@ -85,13 +126,17 @@ export function teamNamesMatch(left, right) {
   const compactRight = normalizedRight.replace(/\s+/g, '');
   if (compactLeft === compactRight) return true;
 
-  const leftTokens = meaningfulTeamTokens(left);
-  const rightTokens = meaningfulTeamTokens(right);
+  const leftTokens = meaningfulTeamTokens(normalizedLeft);
+  const rightTokens = meaningfulTeamTokens(normalizedRight);
   if (leftTokens.length === 0 || rightTokens.length === 0) return false;
 
-  if (isAcronymOf(left, rightTokens) || isAcronymOf(right, leftTokens)) {
+  if (isAcronymOf(normalizedLeft, rightTokens) || isAcronymOf(normalizedRight, leftTokens)) {
     return true;
   }
+
+  const leftTeam = knownTeam(normalizedLeft);
+  const rightTeam = knownTeam(normalizedRight);
+  if (leftTeam || rightTeam) return Boolean(leftTeam && leftTeam === rightTeam);
 
   const [shorterTokens, longerTokens] = leftTokens.length <= rightTokens.length
     ? [leftTokens, rightTokens]

@@ -37,9 +37,8 @@ export function collectMatches(root) {
 }
 
 export function sameTeam(actual, expected) {
-    // Shared matcher handles aliases; don't collapse youth/reserve/women's teams.
-    const qualifiers = value => normalizeTeamName(value).match(/\b(?:u\d{2}|ii|b|kadin|women|reserves)\b/g)?.join(' ') || '';
-    return qualifiers(actual) === qualifiers(expected) && teamNamesMatch(actual, expected);
+    // The shared matcher owns both aliases and youth/reserve/women's identity.
+    return teamNamesMatch(actual, expected);
 }
 
 export function isPair(match, home, away, bothDirections = false) {
