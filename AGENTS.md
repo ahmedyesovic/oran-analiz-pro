@@ -89,7 +89,7 @@ This is the latest recorded local verification, not a permanent test-count requi
 - Live local Roma–Genoa Sahadan H2H discovery returned 10 rows. A Mackolik daily-feed query for Roma–Genoa on 2025-01-17 returned one candidate. These checks do not establish odds-archive availability or access from Render.
 - The production Render endpoints returned provider HTTP 429 responses during the investigation. Backend commit `d8cafdc` was subsequently deployed to Render, where the rate limit remained.
 - The same backend was installed on the VDS with Node.js v24.22.0, automatic systemd startup and HTTPS. All 56 tests passed on the VDS. An external HTTPS Betis–Barcelona pair search returned 51 verified Nesine markets for 2026-10-17; Sahadan H2H returned 10 initial-table rows. These checks establish access for these queries at verification time, not guaranteed future provider access.
-- The production frontend build with the Render API URL succeeded before publication. No frontend files changed; lint and browser interaction checks were not repeated. The earlier UI verification and its limitations are recorded below.
+- The production frontend build with the VDS API URL succeeded. GitHub Pages and Netlify published configuration commit `6463c2d`; their live Chrome sessions both sent searches to the VDS, received 51 Betis–Barcelona markets and 10 H2H rows, and generated a valid 2400 × 3652 PNG (484,008 bytes). A desktop result screenshot was inspected at 1280 px. Frontend component code did not change; lint, mobile layouts, theme interactions, and all-category exports were not rechecked. The earlier UI verification and its limitations are recorded below.
 
 ### Earlier Verification — 2026-09-08
 
