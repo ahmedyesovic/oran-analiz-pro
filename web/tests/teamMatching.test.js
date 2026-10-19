@@ -8,6 +8,12 @@ import { MatchFinder } from '../src/matchFinder.js';
 import { SahadanScraper } from '../src/SahadanScraper.js';
 
 const cases = [
+    ['Athletico Bilbao', 'Ath. Bilbao', true],
+    ['Athletico Bilbao', 'Athletic Bilbao', true],
+    ['Athletico Bilbao', 'Atlético Madrid', false],
+    ['Athletico Bilbao', 'A. Bilbao (K)', false],
+    ['Athletico Bilbao', 'Ath. Bilbao II', false],
+    ['Athletico Bilbao', 'Ath. Bilbao U19', false],
     ['Man. City', 'Manchester City', true],
     ['Manchester City FC', 'Man City', true],
     ['ManchesterCity', 'Manchester City', true],
@@ -95,6 +101,7 @@ test('Valencia-Bilbao H2H accepts the provider abbreviation and rejects women ro
         .replaceAll('Genoa', 'Valencia').replaceAll('Como', 'Ath. Bilbao');
     const rows = parseSahadanH2hTable(html, 'Valencia', 'Athletic Bilbao');
     assert.equal(rows.length, 10);
+    assert.deepEqual(parseSahadanH2hTable(html, 'Valencia', 'Athletico Bilbao'), rows);
     assert.equal(rows[0].home, 'Valencia');
     assert.equal(rows[0].away, 'Ath. Bilbao');
     assert.throws(() => parseSahadanH2hTable(
@@ -148,4 +155,33 @@ test('Sahadan finds Real Madrid-Sevillia in the main team schedule', async t => 
     const candidates = await scraper.pairCandidates('Real Madrid', 'Sevillia');
     assert.equal(candidates.length, 1);
     assert.equal(candidates[0].uuid, 'madridsevilla');
+});
+
+
+test('Valencia-Athletico Bilbao resolves the main Nesine team rather than women or reserves', () => {
+    const result = new MatchFinder({ debug: false }).findMatch([
+        { C: 20, TYPE: 1, HN: 'Valencia', AN: 'Ath. Bilbao II' },
+        { C: 21, TYPE: 1, HN: 'Valencia (K)', AN: 'A. Bilbao (K)' },
+        { C: 22, TYPE: 1, HN: 'Valencia', AN: 'Athletic Bilbao' }
+    ], { home: 'Valencia', away: 'Athletico Bilbao' });
+    assert.equal(result.found, true);
+    assert.equal(result.event.C, 22);
+});
+
+test('Sahadan discovers Valencia-Athletico Bilbao using the provider abbreviation', async t => {
+    const scraper = new SahadanScraper();
+    scraper.api = async (path, parameters) => ({ data: parameters.search === 'Valencia'
+        ? [{ type: 1, name: 'Valencia', uuid: 'valenciamain' }] : [] });
+    t.mock.method(globalThis, 'fetch', async url => {
+        assert.equal(String(url), 'https://www.sahadan.com/takim/valencia/valenciamain');
+        return new Response(`<script id="__NUXT_DATA__">${JSON.stringify([
+            { matches: 1 }, [2],
+            { uuid: 3, team_A: 4, team_B: 6, date_time_utc: 8, status: 9 },
+            'valenciabilbao', { name: 5 }, 'Valencia', { name: 7 }, 'Ath. Bilbao',
+            '2026-10-17 19:00:00', 'Played'
+        ])}</script>`);
+    });
+    const candidates = await scraper.pairCandidates('Valencia', 'Athletico Bilbao');
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].uuid, 'valenciabilbao');
 });

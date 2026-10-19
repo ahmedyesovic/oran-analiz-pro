@@ -98,6 +98,8 @@ This is the latest recorded local verification, not a permanent test-count requi
 
 - Follow-up reported spelling `Real Madrid` / `Sevillia` reproduced Mackolik match-not-found and Sahadan HTTP 404, while `Sevilla` resolved correctly. Added the explicit `Sevillia` → `Sevilla` alias in both shared matchers, preserving squad identity and rejecting Sevilla Atletico. All 70 automated tests passed locally and on the VDS, including five new spelling/discovery regressions. Backend commit `368a80a` was deployed. A fresh Netlify Chrome search using the exact reported `Real Madrid` / `Sevillia` inputs returned HTTP 200, 50 verified markets and 10 Sahadan H2H rows, resolving both reproduced errors. Its single-category PNG was valid (2400 × 3652, 488,728 bytes). Frontend components were unchanged; responsive/theme interactions and all-category export were not rechecked.
 
+- Follow-up exact input `Valencia` / `Athletico Bilbao` reproduced missing Sahadan comparison and Mackolik historical-match errors. Added this spelling as an explicit shared alias for Athletic Bilbao, retaining squad identity and Atlético Madrid rejection. All 72 automated tests passed locally, including exact-input discovery and H2H parsing coverage.
+
 ### Earlier Verification — 2026-09-08
 
 - 45 automated tests passed; the production frontend build with the Render API URL succeeded. Lint exited successfully with four warnings: three unused callback parameters in `aiExportRenderer.js` and the selection-sync effect in `MatchSearch.jsx`.

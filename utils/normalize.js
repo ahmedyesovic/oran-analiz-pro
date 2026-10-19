@@ -51,6 +51,7 @@ const TEAM_ALIASES = new Map([
     ['manchester city', 'manchester city'],
     ['man city', 'manchester city'],
     ['athletic bilbao', 'athletic bilbao'],
+    ['athletico bilbao', 'athletic bilbao'],
     ['bilbao', 'athletic bilbao'],
     ['ath bilbao', 'athletic bilbao'],
     ['a bilbao', 'athletic bilbao'],
