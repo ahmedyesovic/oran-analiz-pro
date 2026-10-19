@@ -100,9 +100,120 @@ This is the latest recorded local verification, not a permanent test-count requi
 
 - Follow-up exact input `Valencia` / `Athletico Bilbao` reproduced missing Sahadan comparison and Mackolik historical-match errors. Added this spelling as an explicit shared alias for Athletic Bilbao, retaining squad identity and Atlético Madrid rejection. All 72 automated tests passed locally and on the VDS, including exact-input discovery and H2H parsing coverage. Backend commit `8e3af1f` was deployed. A fresh Netlify Chrome search using the exact reported input with Mackolik selected returned 51 verified markets and 10 Sahadan H2H rows (both HTTP 200). With Sahadan selected, the same exact-input search returned 93 verified markets (HTTP 200) and the same 10 H2H rows (browser-cache revalidation HTTP 304). Both source selections generated valid single-category PNGs (Mackolik 2400 × 3652; Sahadan 2400 × 4346). Frontend components were unchanged; responsive/theme interactions and all-category export were not rechecked.
 
+- Follow-up exact input `Den Haag` / `PSV` reproduced Mackolik match-not-found (HTTP 404), while `Den Haag` / `PSV Eindhoven` returned 47 verified Nesine markets for 2026-10-17. The daily feed uses `Den Haag` / `PSV`; the odds archive uses `ADO Den Haag` / `PSV Eindhoven`. Added the explicit `PSV` / `PSV Eindhoven` alias in both shared matchers, retaining Jong PSV, FC Eindhoven and squad separation. New regression assertions failed before the fix; all 74 tests passed locally and on the VDS afterward. The user requested the change directly on the VDS; files were backed up, patched and tested there before restarting the service. Commit `e78479e` records the same application/test changes on GitHub. External HTTPS verification with the exact input returned HTTP 200 and 47 markets; Chrome searches on both live sites displayed the correct archive and 10 Sahadan H2H rows. The first Netlify H2H request reported a provider connection failure; a single subsequent API request returned HTTP 200 with 10 rows, and repeating the Netlify search displayed those rows. Frontend code, responsive/theme interactions and PNG exports were not changed or rechecked.
+
 ### Earlier Verification — 2026-09-08
 
 - 45 automated tests passed; the production frontend build with the Render API URL succeeded. Lint exited successfully with four warnings: three unused callback parameters in `aiExportRenderer.js` and the selection-sync effect in `MatchSearch.jsx`.
 - A live local Genoa–Como H2H query succeeded with 10 rows, half-time scores, and Sahadan provenance. The earlier 2026-09-05 checks compared Genoa–Como and Arsenal–Chelsea rows with their source HTML. Provider requests can intermittently return HTTP 429/502.
 - The search form was visually inspected in Chrome at 320, 390, 768, and 1280 px, including default, black, and white themes and keyboard theme selection. No horizontal overflow was observed in the empty search form; the 390 px action buttons measured equal widths and 50 px heights. Full result/export layout, touch, and hover interaction coverage remains incomplete.
 - These checks were performed before the requested GitHub and Netlify publication; this snapshot alone is not evidence of deployment.
+
+
+## Güncel Durum — 2026-10-19
+
+Bu bölüm, bu sohbetteki kullanıcı taleplerinin tamamını, yapılan işlemleri, verilen yanıtların içeriğini ve son doğrulanan durumu birlikte kaydeder. Eski asistan yanıtlarının kelimesi kelimesine metni mevcut bağlamda bulunmadığından bu bir birebir dışa aktarım değil, konuşmanın kapsamlı kaydıdır. Sunucu parolası ve diğer kimlik doğrulama bilgileri kayda dahil edilmemiştir. Aşağıdaki sonuçlar belirtilen kontrollerin yapıldığı andaki durumu gösterir; sağlayıcılara gelecekte kesintisiz erişim garantisi vermez.
+
+### Sohbet kaydı ve alınan kararlar
+
+1. **Proje yönergeleri:** Kullanıcı “bu projedeki AGENTS.MD dosyasını oku” dedi. Proje yönergeleri okundu. Daha sonra kullanıcı AGENTS.md içeriğini ve çalışma ortamını da paylaştı. Bu dosyadaki mimari, test, arayüz, tema ve güvenlik kuralları esas alındı.
+
+2. **İlk hata bildirimi:** Kullanıcı `https://oran-analiz-pro.netlify.app` ve `https://ahmedyesovic.github.io/oran-analiz-pro/` sitelerinde Real Madrid–Sevillia, Bayer Leverkusen–Freiburg, City–Ipswich, Real Betis–Barcelona, Valencia–Athletico Bilbao, Roma–Genoa ve Strasbourg–PSG maçlarının oran görsellerini almaya çalışırken HTTP 429 ve “mackolik: istenen geçmiş maç bulunamadı” hataları aldığını bildirdi. Roma ve Strasbourg için Sahadan HTTP 429 da bildirildi. Bu hata türlerinin tamamının tek nedenden kaynaklanmadığı sonradan doğrulandı: sağlayıcı istek sınırı, geçici sağlayıcı hataları ve takım adı eşleştirmesi ayrı sorunlardı.
+
+3. **Yetkilendirme ve çalışma ortamı:** Kullanıcı “onaylıyorum”, ardından “r studio neden giriyorsun?” ve “o zaman node.js kur” dedi. Çalışmalar bağımsız Node.js kurulumu üzerinden sürdürüldü. Yerelde ve VDS'de kullanılan doğrulanmış sürüm Node.js v24.22.0 oldu. Kullanıcı “Değişiklikleri canlı sitelere yayınla” diyerek yayınlamayı da istedi.
+
+4. **Real Betis–Barcelona ve Maçkolik:** Kullanıcı bu maçı yazıp **Oranları Bul** butonuna bastığında “mackolik: HTTP 429 — kaynak istekleri sınırlandırdı. 60 saniye bekleyin.” hatası aldığını, Maçkolik'in seçili olduğunu belirtti. Kullanıcı “nasıl bir yol izlememiz gerekiyor?” diye sordu. Sağlayıcı yanıtları, Render erişimi ve sunucu alternatifi araştırıldı.
+
+5. **HTTP hata yönetimi:** `sourceHttp.js` üzerinde sağlayıcı bazında 429 bekleme süresi, sayısal ve tarih biçimli `Retry-After` desteği ve geçersiz başlıkta varsayılan 60 saniye davranışı uygulandı. API uygun 503 ve `Retry-After` yanıtını korur; uygun önbellek sonucu varsa kullanılabilir. Taşıma ve bozuk sağlayıcı yanıtları “maç bulunamadı” sonucuna gizlenmez. Mackolik günlük akışlarının şeması ve maç kimlikleri doğrulanır. Bir aday başarısız olduğunda sonraki adaylar denenebilir; bütün adaylar başarısızsa kaynak hatası korunur. Bu aşamada 56 otomatik test geçti. Render'a dağıtım yapılmasına rağmen Render üzerinden sağlayıcı 429 yanıtları devam etti.
+
+6. **Ücretsiz barındırma arayışı:** Kullanıcı “bana render tarzı ücretsiz olanları listele” dedi; alternatifler değerlendirildi. Ardından “Northflank deneyelim ilk önce” ve “Developer Sandbox seçili” dedi. Northflank denemesi yapıldı; ödeme yöntemi gerektiren engel nedeniyle yeni çalışan servis kurulmadı. Kullanıcının kendi VDS'sini kullanma kararıyla bu deneme bırakıldı.
+
+7. **Kullanıcının VDS'si:** Kullanıcı “bende sunucu var 3 aylık sunucu ona kurarmıyız?” dedi ve şu bilgileri paylaştı: ana bilgisayar adı `azarbayram0`, birincil IP `185.23.75.42`, nameserver adresleri `ns1.ehost.com.tr` ve `ns2.ehost.com.tr`, paket `eH 3 - Linux VDS`. Sonraki mesajda root parolası paylaşıldı: **[GİZLENDİ — PAROLA DOSYAYA KAYDEDİLMEDİ]**. Bu bilgilerle uygulama VDS'ye kuruldu.
+
+8. **VDS kurulumu ve sitelerin bağlanması:** Ubuntu 24.04 üzerinde Node.js, Puppeteer/Chrome bağımlılıkları ve uygulama kuruldu. Uygulama `/opt/oran-analiz-pro` altında `oran-analiz` kullanıcısıyla, `oran-analiz.service` systemd servisi olarak çalışır. Caddy, `127.0.0.1:3000` üzerindeki uygulamaya HTTPS ters vekil sağlar. Kullanılan API adresi `https://oran-api.185-23-75-42.sslip.io` oldu. Netlify ve GitHub Pages bu API'ye bağlandı. Sunucunun otomatik başlangıcı ve HTTPS doğrulandı.
+
+9. **Hataların tamamen bitip bitmediği sorusu:** Kullanıcı ilk yedi maçı yeniden listeleyerek “artık bu hataları vermeecek doğru mu?” diye sordu. Sonraki doğrulamalar erişimin düzeldiğini gösterdi; ancak hiçbir aşamada sağlayıcıların gelecekte 429/502 vermeyeceği garanti edilmedi. Eşleştirme sorunları ayrıca ele alındı.
+
+10. **Diğer maçların analizi:** Kullanıcı “diğer maçlarıda analiz yap” dedi. Netlify üzerinde altı diğer çift, Maçkolik oranları, Sahadan geçmiş maçları ve tek kategori PNG indirmeleriyle incelendi. İlk denetimde Real Madrid–Sevilla 50, Bayer Leverkusen–Freiburg 51, Manchester City–Ipswich Town 49, Roma–Genoa 51 ve Strasbourg–PSG 50 oran döndürdü. Bazı Sahadan 502 yanıtları tek manuel tekrar sonrası düzeldi. Valencia başlangıç araması başarısız oldu; Valencia H2H yanlışlıkla kadın takımlarını, City H2H ise rezerv takımı seçiyordu. Bu denetimde ilk listedeki yazım varyasyonları yerine doğru kulüp adları kullanıldığı için `Sevillia` ve `Athletico Bilbao` sorunları o aşamada kapsanmamıştı.
+
+11. **Eşleştirmeleri düzeltme talebi:** Kullanıcı “bu eşleştirme hataları düzelt” dedi. Sağlayıcıdaki `Man. City`, `Ath. Bilbao` ve `A. Bilbao` adları ortak eşleştiricide tanındı. Kadın, rezerv ve genç takım işaretleri ortak kimlik kontrolüne taşındı; `(K)`, `Res.`, yaş grupları ve ikinci/üçüncü takım işaretleri ana takımla karıştırılmadı. Web ve eklenti normalizasyonu birlikte güncellendi. Sahadan `sameTeam` aynı ortak kurala bağlandı.
+
+12. **İnceleme ve regresyonların giderilmesi:** Kod incelemesi, `B. Dortmund`, `B. Leverkusen` ve `K. Beerschot` gibi adların başındaki harflerin takım eki sayılmaması gerektiğini gösterdi. Bu ayrım düzeltildi. `ManchesterCity`, `MC` ve `Bilbao` gibi mevcut güvenli eşleşmeler korundu. Tek başına `City` girdisi Manchester City'ye otomatik genişletilmedi. Bu aşamada toplam 65 test yerelde ve VDS'de geçti; düzeltme `b5f162b` ile yayımlandı.
+
+13. **İlk eşleştirme düzeltmesinin canlı sonucu:** Altı çift yeniden denendi; her birinde oranlar, 10 Sahadan H2H satırı ve geçerli tek kategori PNG elde edildi. Valencia–Athletic Bilbao 51, Manchester City–Ipswich 49 oran döndürdü. Valencia satırlarının kadın takımı, City satırlarının rezerv takımı olmadığı kaynak satırlarından doğrulandı. GitHub Pages üzerinde de bu iki çift ve PNG akışları kontrol edildi. Asistan kullanıcıya düzeltmenin canlıya alındığını ve o kontrollerde 429 görülmediğini bildirdi.
+
+14. **İki sitede güncellemelerin görünmesi:** Kullanıcı iki site adresini vererek “sitelere güncellemeler yansıdı mı?” diye sordu. Asistan iki sitenin güncellenen ortak VDS API'sini kullandığını, Manchester City–Ipswich ve Valencia–Athletic Bilbao sorgularının her iki sitede doğrulandığını bildirdi. Backend değişikliği için Netlify'nin değişmeyen arayüzünün yeniden derlenmesi gerekmedi; canlı arayüz yeni API davranışını kullandı.
+
+15. **Render bağlantısı sorusu:** Kullanıcı “render bağlantısı kaldırıldı mı?” diye sordu. `netlify.toml`, GitHub Pages iş akışı ve frontend API ayarları kontrol edildi. Asistan sitelerin VDS'ye geçtiğini, Render servisinin o anda yalnızca geri dönüş için tutulduğunu ve siteler tarafından kullanılmadığını açıkladı.
+
+16. **Render servisini silme talebi:** Kullanıcı “render'daki servis sil. bu sunucu 3 ay sonra süresi bitiyor. bende başka bir render servis açarım.” dedi. Render'daki `oran-analiz-pro` servisi, `srv-dadmhlgn74is73amq40g` kimliği ve doğru GitHub deposuyla doğrulandı. Önizlemenin ardından kullanıcının açık talebi doğrultusunda servis silindi. Render CLI `deleted: true` döndürdü; son servis listesi boştu. VDS `/api/health` yanıtı `{"status":"ok"}` kaldı. Asistan silmeyi ve mevcut sitelerin VDS'de çalıştığını bildirdi. Yeniden kurulum bilgileri `c1c6f3a` kaydında saklandı. Render hesabı veya diğer kaynaklar için ayrıca silme işlemi yapılmadı.
+
+17. **Real Madrid–Sevillia hatasının yeniden bildirilmesi:** Kullanıcı Netlify'de “Real Madrid - Sevillia” analizinin “sahadan: HTTP 404” ve “mackolik: istenen geçmiş maç bulunamadı” hatalarını verdiğini bildirdi. Aynı girdi canlı API'de tekrarlandı; doğru `Sevilla` yazımı H2H sonucunu getirirken `Sevillia` eşleşmiyordu. Asistan önceki kontrolde doğru yazımı kullandığını ve bu varyasyonu kapsamamış olduğunu açıkça belirtti.
+
+18. **Sevillia düzeltmesi ve doğrulaması:** Ortak web ve eklenti alias listelerine `Sevillia` → `Sevilla` eklendi. Kadın/rezerv/genç takımlar ve Sevilla Atletico ayrı tutuldu. Yeni testler düzeltmeden önce başarısız, sonra başarılı oldu. Toplam 70 test yerelde ve VDS'de geçti. `368a80a` VDS'ye dağıtıldı. Netlify'de tam `Real Madrid` / `Sevillia` girdisiyle 18.10.2026 tarihli maç için 50 doğrulanmış oran, 10 Sahadan geçmiş maç satırı ve 2400 × 3652 boyutunda geçerli PNG alındı. Asistan kullanıcıya sayfayı yenileyip yeniden deneyebileceğini bildirdi. Canlı doğrulama kaydı `1bf661a` ile GitHub'a gönderildi.
+
+19. **Valencia–Athletico Bilbao hatasının yeniden bildirilmesi:** Kullanıcı “Valencia - Athletico Bilbao Kaynak: Sahadan” girdisinde “Bu takımlar için Sahadan karşılaştırma sayfası bulunamadı.” ve “mackolik: istenen geçmiş maç bulunamadı.” hatalarını bildirdi. Bu iki hata tam aynı yazımla canlı API'de tekrarlandı. `Athletic Bilbao` eşleşirken `Athletico Bilbao` eşleşmiyordu. Asistan önceki denemede doğru `Athletic Bilbao` yazımını kullandığını belirtti.
+
+20. **Athletico Bilbao düzeltmesi ve doğrulaması:** Ortak web ve eklenti alias listelerine `Athletico Bilbao` → `Athletic Bilbao` eklendi. Atlético Madrid, kadın takımı, rezerv takım ve genç takım ayrımları korundu. Eşleştirme, Nesine maç bulma, Sahadan keşfi ve H2H HTML ayrıştırması testleri genişletildi. Düzeltmeden önce testlerin başarısız olduğu görüldü; ardından 72 test yerelde ve VDS'de geçti. `8e3af1f` VDS'ye dağıtıldı. Netlify'de tam `Valencia` / `Athletico Bilbao` girdisi hem Maçkolik hem Sahadan seçiliyken denendi: Maçkolik 51, Sahadan 93 doğrulanmış oran, her ikisinde 10 H2H satırı döndü. Tek kategori PNG'ler sırasıyla 2400 × 3652 ve 2400 × 4346 boyutunda geçerliydi. Asistan düzeltmenin canlı olduğunu bildirdi. Doğrulama kaydı `4082b79` ile GitHub'a gönderildi.
+
+21. **Bu kayıt talebi:** Kullanıcı “buradaki tüm sohbeti AGENTS.md dosyasına bugünün tarihi ile güncel durum başlığı ile ekle” dedi. Bu bölüm 2026-10-19 tarihiyle, önceki yönergeler ve doğrulama kayıtları korunarak eklendi. Parola bilinçli olarak dışarıda bırakıldı.
+
+### Son doğrulanan canlı durum
+
+| Alan | Durum |
+| --- | --- |
+| Netlify | `https://oran-analiz-pro.netlify.app` — ortak VDS API'sini kullanıyor. |
+| GitHub Pages | `https://ahmedyesovic.github.io/oran-analiz-pro/` — ortak VDS API'sini kullanıyor. |
+| API | `https://oran-api.185-23-75-42.sslip.io` |
+| Sunucu | Kullanıcının üç aylık eH 3 Linux VDS'si, `185.23.75.42`; kesin son kullanım tarihi paylaşılmadı. |
+| Uygulama | `/opt/oran-analiz-pro`, `oran-analiz` kullanıcısı, `oran-analiz.service`, Caddy HTTPS. |
+| Son yayımlanan uygulama düzeltmesi | `8e3af1f` — Athletico Bilbao yazımı. |
+| Bu belge düzenlemesinden önceki son GitHub kaydı | `4082b79` — iki kaynakla canlı Athletico Bilbao doğrulaması. |
+| Son otomatik doğrulama | 72 test, yerelde ve VDS'de başarılı. Bu belge düzenlemesi için testler yeniden çalıştırılmadı. |
+| Render | Eski `oran-analiz-pro` servisi kullanıcının talebiyle silindi; çalışan Render yedeği yok. |
+| Northflank | Uygulama çalıştıran yeni bir servis kurulmadı. |
+
+### Doğrulanan maçlar
+
+Bu tablo farklı denetimlerde alınan sonuçları birlikte listeler; bütün sorguların bu belge düzenlenirken yeniden çalıştırıldığı anlamına gelmez. H2H satır sayısı sabitlenmemiştir; bu örneklerde kaynağın ilk HTML tablosundan 10 satır gelmiştir.
+
+| Girdi / takım çifti | Doğrulanan oranlar | H2H / PNG |
+| --- | --- | --- |
+| Real Betis–Barcelona | Maçkolik: 51 | İki sitede 10 H2H satırı ve geçerli PNG. |
+| Real Madrid–Sevilla | Maçkolik: 50 | 10 H2H satırı ve geçerli PNG. |
+| Real Madrid–Sevillia | Maçkolik: 50 | Tam bildirilen yazımla Netlify'de 10 H2H satırı ve geçerli PNG. |
+| Bayer Leverkusen–Freiburg | Maçkolik: 51 | 10 H2H satırı ve geçerli PNG. |
+| Manchester City–Ipswich Town | Maçkolik: 49 | Ana takımlara ait 10 H2H satırı; iki sitede geçerli PNG. |
+| Valencia–Athletic Bilbao | Maçkolik: 51 | Kadın takımlarından ayrılmış 10 H2H satırı; iki sitede geçerli PNG. |
+| Valencia–Athletico Bilbao | Maçkolik: 51; Sahadan: 93 | Tam bildirilen yazımla Netlify'de iki kaynakta 10 H2H satırı ve geçerli PNG. |
+| Roma–Genoa | Maçkolik: 51 | 10 H2H satırı ve geçerli PNG. |
+| Strasbourg–PSG | Maçkolik: 50 | 10 H2H satırı ve geçerli PNG. |
+
+### Devam edecek kişi için önemli bilgiler
+
+- Paylaşılan parolayı, erişim anahtarlarını veya token'ları bu dosyaya, kaynak koda ya da Git geçmişine ekleme. Bu kayıt bir kimlik bilgisi yedeği değildir.
+- Kullanıcının yazdığı tam girdiyi yeniden üretmeden “düzeldi” deme. İlk canlı kontroller doğru kulüp adlarını kullandığı için `Sevillia` ve `Athletico Bilbao` yazımları ancak sonraki bildirimlerde kapsandı.
+- Desteklenen açık varyasyonlar arasında `Sevillia` → `Sevilla`, `Athletico Bilbao` → `Athletic Bilbao`, `Man. City` → `Manchester City`, `Ath. Bilbao` / `A. Bilbao` / `Bilbao` → `Athletic Bilbao` bulunur. Alias değişikliklerini hem `utils/normalize.js` hem `extension/utils/normalize.js` içinde aynı davranışla sürdür.
+- Tek başına `City` belirsizdir ve otomatik Manchester City alias'ı değildir. Geniş, doğrulanmamış yazım benzerliği kuralları ekleme; kadın/rezerv/genç takımları ana takıma dönüştürme.
+- `/api/head-to-head` her zaman Sahadan kullanır. Oran kaynağı seçimi bu isteğin kaynağını değiştirmez. Sahadan karşılaştırma tablosunun ilk HTML satırlarını ve kaynak kimliğini koru.
+- HTTP 429, sağlayıcı 502/404 ve kimlik/eşleştirme hataları farklı nedenler olabilir. Geçerli geçmiş sonuçta oran arşivi olmamasıyla sağlayıcı hatasını ayır. Yeni sunucu gelecekte 429 yaşanmayacağı anlamına gelmez.
+- Bağımsız eklenti testlerinin mevcut engelleri: `test_suite.js` eksik `evaluateMatchMatch` export'unu, `test_ai_export.js` eksik `extension/utils/marketDefinitions.js` dosyasını bekliyor. Web regresyonları gerçek eklenti eşleştiricisini ayrıca test ediyor; bu iki eski suite'in geçtiğini söyleme.
+- Son değişiklikler backend/eşleştirme kapsamındaydı. Güncel turlarda mobil/tema etkileşimleri, tüm kategori PNG dışa aktarımı ve lint yeniden kontrol edilmedi. Tek kategori PNG ve masaüstü ekran denetimi bu kapsamların yerine geçmez.
+- Kullanıcı VDS'nin yaklaşık üç ay sonra biteceğini ve sonra başka bir Render servisi açacağını söyledi. Kesin bitiş tarihi bilinmediğinden otomatik son kullanım tarihi uydurma. Kullanıcı yeni Render servisini açtığında yeni HTTPS adresini `netlify.toml` ve GitHub deposundaki `API_BASE_URL` değişkenine yazıp iki frontend'i yeniden yayımla. Silinen Render URL'sinin yeniden aynı olacağını varsayma.
+- Render yeniden kurulum bilgileri: GitHub deposu `ahmedyesovic/oran-analiz-pro`, dal `main`, Node runtime, boş root directory, build `npm install && npm run build`, start `npm start`, health check `/api/health`. Eski servis Frankfurt/free planındaydı; yeni servisin o günkü plan ve sağlayıcı erişimi ayrıca doğrulanmalıdır.
+
+## Güvenilir arama yayını — 2026-10-19 (son doğrulama)
+
+Önceki sohbet kaydı o aşamanın tarihsel kaydıdır. Bu bölüm uygulama sürümü `a557786` için daha sonra yapılan doğrulamayı kaydeder; önceki kayıtlar silinmemiştir. Ayrıntılı kanıtlar ve kapsam sınırları: `docs/verification-2026-10-19-reliability.md`.
+
+- Kullanıcı tekrar eden takım adı/kaynak hatalarına kalıcı çözüm istedi; yazarken takım önerisi seçeneğini seçti ve planın uygulanmasını onayladı. Takım alanları artık en az iki karakterden sonra öneri gösterir; listeden seçim sabit, kaynak kapsamı doğrulanan takım kimliklerini gönderir. Serbest metin arama korunur. Yazım benzerliği yalnızca öneri üretir; otomatik kimlik kanıtı değildir.
+- `web/src/reliabilityStore.js` SQLite kayıtlarını, `teamDirectory.js` doğrulanmış takım rehberini, `verifiedCache.js` tamamlanmış maç/arşiv doğrulamasını yönetir. Kaynaklar aynı görünen UUID üzerinden otomatik birleştirilmez. Ayrı kaynak kayıtları yalnızca doğrulanmış Nesine maç kodu, tarih, skor, iki takım kimliği ve kadro türü kanıtlarıyla ortak öneride gösterilir. Kaynak kayıtları korunur; eksik takım kayıtları geçerli arşiv kanıtından tamamlanabilir.
+- Kalıcı veri yolu `/var/lib/oran-analiz/data.sqlite`; systemd servisinde `NODE_ENV=production` ve `ORAN_DATA_DIR=/var/lib/oran-analiz` açıkça ayarlı. SQLite dosyasını canlı WAL yazımı sürerken tek başına kopyalama; `docs/reliability-operations.md` içindeki çevrimiçi yedekleme/geri yükleme yöntemini kullan. Gelecekte Render veya başka sunucuya taşınırken yazılabilir `ORAN_DATA_DIR` ve doğrulanmış SQLite yedeği ayrıca taşınmalıdır.
+- Doğrulanmış tamamlanmış oranlar kesin kaynak/maç kimliği/tarih anahtarıyla kalır. Oranı bulunmayan arşiv 24 saat, takım çifti keşfi bir saat geçerlidir. H2H 15 dakika güncel sayılır; kaynak hatası veya toplam süre aşımında en fazla 24 saatlik doğrulanmış tablo açık kayıt tarihiyle gösterilebilir. Eski güncel oranlar gösterilmez. Eksik/malformed kaynak yanıtı, yanlış kimlik/kadro, bağlantı hatası ve gerçekten bulunamayan maç ayrı kalır.
+- Kaynak başına eşzamanlı istek sınırı iki, bekleyen kuyruk sınırlı, toplam arama bütçesi 120 saniyedir. Geçici bağlantı/502/503/504 hatasında en fazla bir otomatik tekrar vardır. 429 bekleme süresi SQLite üzerinde yeniden başlatma sonrasında korunur; 404 veya doğrulama hatası tekrar edilmez.
+- 218 regresyon testi yerelde, birleşen main üzerinde ve VDS test ortamında Node.js v24.22.0 ile geçti. Lint dört mevcut uyarıyla başarılı; üretim derlemeleri başarılı. Bağımsız son inceleme önceki üç bulgunun düzeldiğini onayladı. Eski iki bağımsız eklenti testinin daha önce kaydedilen eksik import engelleri için yeni başarı iddiası yoktur.
+- VDS test ortamında sekiz bildirilen tam girdi ve iki doğru yazım tekrarı her iki oran kaynağıyla kontrol edildi. Den Haag/PSV: Maçkolik 47, Sahadan 78 doğrulanmış oran ve 10 H2H satırı. Roma/Genoa Sahadan ilk kontrolde 502 verdi; daha sonraki normal tarihli sorguda 93 oranla düzeldi. Gerçek seçili takım kimlikleri, servis yeniden başlatması ve ayrı SQLite yedeği üzerinde kontrollü kaynak kesintisi de doğrulandı; kesin kayıtlı arşiv sağlayıcı çağrısı olmadan açıldı, geçerli eski H2H tablosu korundu, kayıtsız sorgu kaynak hatası verdi.
+- Üretim sürümü `a557786`, gerçek checkout yolu `/opt/oran-analiz-pro`; önceki uygulama `/opt/oran-analiz-pro-before-a557786`, çevrimiçi yedek `/var/backups/oran-analiz/staging-verified-a557786.sqlite`. İlk sembolik bağlantı geçişi mevcut ana modül kontrolü nedeniyle servis başlatmadı ve otomatik geri döndü; başarılı yayın gerçek dizin taşımasıyla yapıldı. Bu servis için aynı ana modül davranışı korunuyorsa checkout yolunu sembolik bağlantıya dönüştürme.
+- Netlify ve GitHub Pages `a557786` arayüzünü yayımladı; ikisi de `index-CJtsT3Pg.js`/`index-CPkqiRO2.css` ve ortak VDS API'sini kullanıyor. GitHub Pages iş akışı `39277565286` başarılı. Canlı Chrome'da iki sitede de tam Den Haag/PSV girdisi, tekil öneriler, klavyeyle seçim, iki oran kaynağı, doğru 2026-10-17 arşivi ve 10 H2H satırı doğrulandı. Netlify ağ panelinde iki isteğin aynı seçili takım kimliklerini taşıdığı ve geçmiş satır seçiminin yalnızca sabit maç kimliği/tarihli oran isteği eklediği görüldü. İki sitede geçmiş seçim H2H kaynağını ve kaydırmayı korudu. Ayrı Maçkolik tek kategori PNG'leri 2400 × 3680, 500.541 bayt olarak doğrulandı; Sahadan PNG ve tüm kategori dışa aktarımı bu turda tekrarlanmadı. Yerel 320/390/768/1280 px ve üç tema kontrolleri yapıldı; tam tema/boyut matrisi ve fiziksel dokunma/masaüstü hover kapsamı eksik. Ayrıntılar doğrulama belgesindedir.
+- `oran-analiz-audit.timer` her gün 03:30 Europe/Istanbul için etkin; ilk otomatik denetim başarılı. Son özel rapor `/var/lib/oran-analiz/reliability-audit.json`. Bu denetim dışarı mesaj göndermez; API erişilebilirliğini ve kayıt kullanımını raporlar, taze doğrudan kaynak kanıtı iddiasında bulunmaz. VDS test servisi durdurulmuştur.
+- Bu sonuçlar kayıtlı maçların sağlamlığını ve yapılan sorguları doğrular; ilk kez istenen, kaydı bulunmayan bir maç yine kaynağın erişilebilir ve doğrulanabilir olmasını gerektirir.
