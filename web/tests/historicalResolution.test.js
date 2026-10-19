@@ -158,6 +158,38 @@ test('provider team-name variants match without broad false positives', () => {
     assert.equal(teamNamesMatch('Manchester United', 'Newcastle United'), false);
 });
 
+test('Den Haag-PSV accepts the daily-feed names and verifies the expanded archive names', async t => {
+    const matchId = 'amb531b6gw4qltbvmqqsrauxg';
+    const archiveUrl = `https://www.mackolik.com/mac/den-haag-vs-psv/iddaa/${matchId}`;
+    const html = mackolikMatchHtml
+        .replace('Stade Lavallois vs Red Star', 'ADO Den Haag vs PSV Eindhoven')
+        .replace('04.09.2026', '17.10.2026')
+        .replaceAll('3100932', '3217274');
+    t.mock.method(globalThis, 'fetch', async url => {
+        const address = new URL(url);
+        if (address.pathname.endsWith('/livescores/json') && address.searchParams.get('matchDate') === '2026-10-17') {
+            return new Response(JSON.stringify({ status: 'success', data: { matches: { match: {
+                id: matchId, matchName: 'Den Haag vs PSV', matchSlug: 'den-haag-vs-psv',
+                homeTeam: { name: 'Den Haag', slug: 'den-haag' },
+                awayTeam: { name: 'PSV', slug: 'psv' }, iddaaCode: 3217274
+            } } } }));
+        }
+        assert.equal(String(url), archiveUrl);
+        return new Response(html);
+    });
+    const scraper = new MackolikScraper({ debug: false });
+    const candidates = await scraper.findMackolikMatchesByDate('Den Haag', 'PSV', '2026-10-17');
+    assert.equal(candidates.length, 1);
+    const parsed = await scraper.tryHttpCandidates(candidates, 'Den Haag', 'PSV', '2026-10-17', new Set());
+    assert.ok(parsed, 'the verified PSV Eindhoven archive must match the PSV input');
+    assert.equal(parsed.homeTeam, 'ADO Den Haag');
+    assert.equal(parsed.awayTeam, 'PSV Eindhoven');
+    assert.equal(parsed.matchDate, '17.10.2026');
+    assert.equal(parsed.matchCode, 3217274);
+    assert.equal(parsed.providers[0].name, 'nesine');
+    assert.equal(parsed.providers[0].odds['MAÇ SONUCU']['Maç Sonucu']['1'], '2.78');
+});
+
 test('Nesine historical aliases resolve Stade Lavallois', () => {
     const finder = new MatchFinder({ debug: false });
     const result = finder.findMatch([historicalEvent], {

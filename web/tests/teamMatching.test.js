@@ -8,6 +8,18 @@ import { MatchFinder } from '../src/matchFinder.js';
 import { SahadanScraper } from '../src/SahadanScraper.js';
 
 const cases = [
+    ['PSV', 'PSV Eindhoven', true],
+    ['PSV', 'PSV Eindhoven FC', true],
+    ['PSV (K)', 'PSV Eindhoven Women', true],
+    ['PSV U21', 'PSV Eindhoven U21', true],
+    ['Den Haag', 'ADO Den Haag', true],
+    ['PSV', 'FC Eindhoven', false],
+    ['PSV', 'Jong PSV', false],
+    ['PSV Eindhoven', 'Jong PSV', false],
+    ['PSV', 'PSV Eindhoven II', false],
+    ['PSV', 'PSV Eindhoven Res.', false],
+    ['PSV', 'PSV Eindhoven U21', false],
+    ['PSV', 'PSV Eindhoven (K)', false],
     ['Athletico Bilbao', 'Ath. Bilbao', true],
     ['Athletico Bilbao', 'Athletic Bilbao', true],
     ['Athletico Bilbao', 'Atlético Madrid', false],
@@ -73,6 +85,17 @@ test('Nesine lookup skips women and reserves before resolving a verified main-te
         { C: 3, TYPE: 1, HN: 'Man. City', AN: 'Ipswich Town' }
     ], { home: 'Manchester City', away: 'Ipswich Town' });
     assert.equal(result.event.C, 3);
+});
+
+test('Den Haag-PSV resolves the main Nesine team rather than Jong PSV or FC Eindhoven', () => {
+    const result = new MatchFinder({ debug: false }).findMatch([
+        { C: 30, TYPE: 1, HN: 'ADO Den Haag', AN: 'Jong PSV' },
+        { C: 31, TYPE: 1, HN: 'ADO Den Haag', AN: 'FC Eindhoven' },
+        { C: 32, TYPE: 1, HN: 'ADO Den Haag', AN: 'PSV Eindhoven U21' },
+        { C: 33, TYPE: 1, HN: 'ADO Den Haag', AN: 'PSV Eindhoven' }
+    ], { home: 'Den Haag', away: 'PSV' });
+    assert.equal(result.found, true);
+    assert.equal(result.event.C, 33);
 });
 
 test('Sahadan discovers the main team rather than opening a reserve or women team page', async t => {
