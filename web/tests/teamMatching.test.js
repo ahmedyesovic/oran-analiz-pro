@@ -102,3 +102,50 @@ test('Valencia-Bilbao H2H accepts the provider abbreviation and rejects women ro
         'Valencia', 'Athletic Bilbao'
     ), /tablosu okunamadı/);
 });
+
+for (const [name, match] of [['web', teamNamesMatch], ['extension', extensionTeamNamesMatch], ['Sahadan', sameTeam]]) {
+    test(`${name} resolves the reported Sevillia spelling without accepting another squad or club`, () => {
+        for (const [left, right, expected] of [
+            ['Sevillia', 'Sevilla', true],
+            ['Sevilla FC', 'Sevillia', true],
+            ['Sevillia (K)', 'Sevilla Women', true],
+            ['Sevillia', 'Sevilla (K)', false],
+            ['Sevillia', 'Sevilla B', false],
+            ['Sevillia', 'Sevilla U19', false],
+            ['Sevillia', 'Sevilla Atletico', false],
+            ['Sevilla', 'Sevilla Atletico', false]
+        ]) {
+            assert.equal(match(left, right), expected, `${left} / ${right}`);
+            assert.equal(match(right, left), expected, `${right} / ${left}`);
+        }
+    });
+}
+
+test('Real Madrid-Sevillia resolves the verified Nesine team spelling', () => {
+    const result = new MatchFinder({ debug: false }).findMatch([
+        { C: 10, TYPE: 1, HN: 'Real Madrid', AN: 'Sevilla Atletico' },
+        { C: 11, TYPE: 1, HN: 'Real Madrid', AN: 'Sevilla' }
+    ], { home: 'Real Madrid', away: 'Sevillia' });
+    assert.equal(result.found, true);
+    assert.equal(result.event.C, 11);
+});
+
+test('Sahadan finds Real Madrid-Sevillia in the main team schedule', async t => {
+    const scraper = new SahadanScraper();
+    scraper.api = async (path, parameters) => {
+        return { data: parameters.search === 'Real Madrid'
+            ? [{ type: 1, name: 'Real Madrid', uuid: 'madridmain' }] : [] };
+    };
+    t.mock.method(globalThis, 'fetch', async url => {
+        assert.equal(String(url), 'https://www.sahadan.com/takim/real-madrid/madridmain');
+        return new Response(`<script id="__NUXT_DATA__">${JSON.stringify([
+            { matches: 1 }, [2],
+            { uuid: 3, team_A: 4, team_B: 6, date_time_utc: 8, status: 9 },
+            'madridsevilla', { name: 5 }, 'Real Madrid', { name: 7 }, 'Sevilla',
+            '2026-10-18 19:00:00', 'Played'
+        ])}</script>`);
+    });
+    const candidates = await scraper.pairCandidates('Real Madrid', 'Sevillia');
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].uuid, 'madridsevilla');
+});
