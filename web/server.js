@@ -42,6 +42,7 @@ export function createApp({ service = new MatchService(), sahadan = new SahadanS
     app.use('/api', (_req, res) => res.status(404).json({ success: false, error: 'API bulunamadı.' }));
     app.use((error, _req, res, _next) => {
         console.error(`[API] ${error.message}`);
+        if (error.retryAfter) res.set('Retry-After', String(error.retryAfter));
         res.status(error.status || 502).json({ success: false, status: 'ERROR', error: error.message });
     });
     const dist = path.join(directory, 'frontend', 'dist');

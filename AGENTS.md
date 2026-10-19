@@ -81,9 +81,16 @@ Use short imperative subjects, such as `Harden historical match lookup`. Pull re
 
 Never commit credentials or tokens. Treat scraped data and provider endpoints as fallible: retain timeouts, validation, deterministic daily-feed lookup, and clear fallback logging.
 
-## Verification Snapshot — 2026-09-08
+## Verification Snapshot — 2026-10-19
 
 This is the latest recorded local verification, not a permanent test-count requirement or evidence of deployment. Refresh it when new checks are performed.
+
+- 56 automated tests passed with `npm run test:historical` on standalone Node.js v24.22.0. New coverage includes provider cooldown/recovery, Retry-After formats, malformed Mackolik daily feeds, and trying later candidates after an individual request fails.
+- Live local Roma–Genoa Sahadan H2H discovery returned 10 rows. A Mackolik daily-feed query for Roma–Genoa on 2025-01-17 returned one candidate. These checks do not establish odds-archive availability or access from Render.
+- The production Render H2H endpoint returned `sahadan: HTTP 429` during the investigation. The local backend changes have not been deployed.
+- The production frontend build with the Render API URL succeeded before publication. No frontend files changed; lint and browser interaction checks were not repeated. The earlier UI verification and its limitations are recorded below.
+
+### Earlier Verification — 2026-09-08
 
 - 45 automated tests passed; the production frontend build with the Render API URL succeeded. Lint exited successfully with four warnings: three unused callback parameters in `aiExportRenderer.js` and the selection-sync effect in `MatchSearch.jsx`.
 - A live local Genoa–Como H2H query succeeded with 10 rows, half-time scores, and Sahadan provenance. The earlier 2026-09-05 checks compared Genoa–Como and Arsenal–Chelsea rows with their source HTML. Provider requests can intermittently return HTTP 429/502.

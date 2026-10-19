@@ -201,6 +201,49 @@ test('Mackolik daily feed resolves Laval/Lavallois variants', async () => {
     }
 });
 
+test('Mackolik provider and malformed daily-feed failures are not reported as missing matches', async t => {
+    for (const [index, [label, response]] of [
+        ['HTTP 502', () => new Response('Bad Gateway', { status: 502 })],
+        ['invalid JSON', () => new Response('<html>unavailable</html>')],
+        ['invalid schema', () => Response.json({ data: {} })],
+        ['invalid entry', () => Response.json({ data: { matches: { broken: null } } })],
+        ['missing identity', () => Response.json({ data: { matches: { broken: {
+            homeTeam: { name: 'Roma' }, awayTeam: { name: 'Genoa' }
+        } } } })]
+    ].entries()) {
+        await t.test(label, async subtest => {
+            subtest.mock.method(globalThis, 'fetch', response);
+            await assert.rejects(new MackolikScraper({ debug: false })
+                .findMackolikMatchesByDate('Roma', 'Genoa', `2020-02-0${index + 1}`),
+            error => error instanceof SourceError);
+        });
+    }
+});
+
+test('a failed Mackolik candidate does not prevent a later verified match from resolving', async t => {
+    t.mock.method(globalThis, 'fetch', async url => String(url).endsWith('/stalecandidate')
+        ? new Response('Not Found', { status: 404 }) : new Response(mackolikMatchHtml));
+    const result = await new MackolikScraper({ debug: false }).tryHttpCandidates([
+        { url: 'https://www.mackolik.com/mac/laval-vs-red-star/iddaa/stalecandidate', title: '04.09.2026' },
+        { url: 'https://www.mackolik.com/mac/laval-vs-red-star/iddaa/validcandidate', title: '04.09.2026' }
+    ], 'Laval', 'Red Star', '2026-09-04', new Set());
+    assert.equal(result.score, '1 - 2');
+    assert.equal(result.providers[0].name, 'nesine');
+});
+
+test('a valid empty Mackolik daily feed remains distinct from a provider failure', async t => {
+    t.mock.method(globalThis, 'fetch', async () => Response.json({ data: { matches: {} } }));
+    assert.deepEqual(await new MackolikScraper({ debug: false })
+        .findMackolikMatchesByDate('Roma', 'Genoa', '2020-03-01'), []);
+});
+
+test('Mackolik candidate transport failures remain errors instead of becoming missing matches', async t => {
+    t.mock.method(globalThis, 'fetch', async () => new Response('Bad Gateway', { status: 502 }));
+    await assert.rejects(new MackolikScraper({ debug: false }).tryHttpCandidates([
+        { url: 'https://www.mackolik.com/mac/roma-vs-genoa/iddaa/transportfailure', title: 'Roma vs Genoa, 01.01.2020' }
+    ], 'Roma', 'Genoa', '2020-01-01', new Set()), error => error.upstreamStatus === 502);
+});
+
 test('missing Nesine date uses Mackolik recent-date feed before web search', async () => {
     const originalFetch = globalThis.fetch;
     const requestedUrls = [];

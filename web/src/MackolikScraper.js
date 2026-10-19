@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { categorizeMarket, MAIN_CATEGORIES } from './marketCategorizer.js';
 import { nesineLink, sameTeam } from './sahadanParser.js';
-import { SourceError, sourceText } from './sourceHttp.js';
+import { SourceError, sourceJson, sourceText } from './sourceHttp.js';
 import {
     normalizeTeamName as normalizeSharedTeamName,
     teamNamesMatch as sharedTeamNamesMatch
@@ -211,30 +211,21 @@ export class MackolikScraper {
         const canonicalMatchDate = this.canonicalDate(matchDate);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(canonicalMatchDate)) return [];
 
-        const request = this.createAbortSignal(20000);
         try {
             const url = new URL('https://www.mackolik.com/perform/p0/ajax/components/competition/livescores/json');
             url.searchParams.append('sports[]', 'Soccer');
             url.searchParams.set('matchDate', canonicalMatchDate);
 
             this.log(`Mackolik tarih listesi sorgulanıyor: ${canonicalMatchDate}`);
-            const response = await fetch(url, {
-                signal: request.signal,
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Accept': 'application/json, text/plain, */*',
-                    'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
-                    'Referer': 'https://www.mackolik.com/canli-sonuclar'
-                }
-            });
-
-            if (!response.ok) {
-                this.log(`Mackolik tarih listesi HTTP ${response.status} döndürdü.`);
-                return [];
+            const payload = await sourceJson(url, { source: 'mackolik', ttl: 300000, timeout: 20000 });
+            if (!payload?.data?.matches || typeof payload.data.matches !== 'object') {
+                throw new SourceError('mackolik: tarih listesi yanıtı geçersiz.');
             }
-
-            const payload = await response.json();
-            const matches = Object.values(payload?.data?.matches || {});
+            const matches = Object.values(payload.data.matches);
+            if (matches.some(match => !match?.id || !match.homeTeam?.name || !match.awayTeam?.name
+                || !(match.matchSlug || (match.homeTeam.slug && match.awayTeam.slug)))) {
+                throw new SourceError('mackolik: tarih listesindeki maç bilgileri geçersiz.');
+            }
             const [year, month, day] = canonicalMatchDate.split('-');
 
             const results = matches
@@ -262,9 +253,7 @@ export class MackolikScraper {
             return results;
         } catch (error) {
             this.log(`Mackolik tarih listesi sorgusu başarısız: ${error.message}`);
-            return [];
-        } finally {
-            request.clear();
+            throw error;
         }
     }
 
@@ -331,6 +320,7 @@ export class MackolikScraper {
     }
 
     async tryHttpCandidates(searchResults, homeTeam, awayTeam, matchDate, triedUrls) {
+        let candidateError = null;
         const sorted = [...searchResults].sort((a, b) => {
             const date = item => this.canonicalDate(item.title.match(/\d{2}\.\d{2}\.\d{4}/)?.[0]);
             return date(b).localeCompare(date(a));
@@ -351,11 +341,14 @@ export class MackolikScraper {
                 return parsed;
             } catch (error) {
                 this.log(`Doğrudan Mackolik isteği başarısız: ${error.message}`);
+                if (error.upstreamStatus === 429) throw error;
+                candidateError = error;
             } finally {
                 request.clear();
             }
         }
 
+        if (candidateError) throw candidateError;
         return null;
     }
 
@@ -466,7 +459,7 @@ export class MackolikScraper {
 
         } catch (error) {
             this.log(`Hata oluştu: ${error.message}`);
-            return null;
+            throw error instanceof SourceError ? error : new SourceError(`mackolik: geçmiş maç sorgusu tamamlanamadı: ${error.message}`);
         } finally {
             if (page) await page.close();
             await this.closeBrowser();

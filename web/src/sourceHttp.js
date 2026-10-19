@@ -1,14 +1,22 @@
 // Server-only transport. Cache concurrent requests and retain bounded local diagnostics.
 const cache = new Map();
 const traces = new Map();
+const cooldowns = new Map();
 const allowedHosts = new Set(['www.sahadan.com', 'www.mackolik.com', 'cdnbulten.nesine.com', 'ls.nesine.com']);
 
 export class SourceError extends Error {
-    constructor(message, status = 502, { upstreamStatus } = {}) {
+    constructor(message, status = 502, { upstreamStatus, retryAfter } = {}) {
         super(message);
         this.status = status;
         this.upstreamStatus = upstreamStatus;
+        this.retryAfter = retryAfter;
     }
+}
+
+function rateLimitError(address, source, until) {
+    const retryAfter = Math.max(1, Math.ceil((until - Date.now()) / 1000));
+    return new SourceError(`${source || address.hostname}: HTTP 429 — kaynak istekleri sınırlandırdı. ${retryAfter} saniye bekleyin.`, 503,
+        { upstreamStatus: 429, retryAfter });
 }
 
 export async function sourceText(url, { ttl = 60000, source, timeout = 15000 } = {}) {
@@ -19,6 +27,9 @@ export async function sourceText(url, { ttl = 60000, source, timeout = 15000 } =
     const key = address.href;
     const existing = cache.get(key);
     if (existing && existing.expires > Date.now()) return existing.promise;
+    const cooldown = cooldowns.get(address.hostname);
+    if (cooldown > Date.now()) throw rateLimitError(address, source, cooldown);
+    cooldowns.delete(address.hostname);
     const promise = (async () => {
         let response;
         try {
@@ -36,10 +47,19 @@ export async function sourceText(url, { ttl = 60000, source, timeout = 15000 } =
                 entries.push({ url: key, status: response.status, fetchedAt: new Date().toISOString(), body: body.slice(0, 2000000) });
                 traces.set(source, entries.slice(-12));
             }
+            if (response.status === 429) {
+                const header = response.headers.get('retry-after');
+                const delay = header && /^\d+$/.test(header.trim())
+                    ? Number(header) * 1000 : Date.parse(header) - Date.now();
+                const until = Date.now() + (Number.isFinite(delay) && delay > 0 ? delay : 60000);
+                cooldowns.set(address.hostname, until);
+                throw rateLimitError(address, source, until);
+            }
             if (!response.ok) throw new SourceError(`${source || address.hostname}: HTTP ${response.status}`, 502, { upstreamStatus: response.status });
             return body;
         } catch (error) {
             if (['TimeoutError', 'AbortError'].includes(error.name)) throw new SourceError(`${source || address.hostname}: zaman aşımı.`, 504);
+            if (error instanceof TypeError) throw new SourceError(`${source || address.hostname}: kaynağa bağlantı kurulamadı.`, 502);
             throw error;
         }
     })();
