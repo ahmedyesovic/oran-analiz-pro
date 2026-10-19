@@ -5,4 +5,4 @@
 
 [build.environment]
   NODE_VERSION = "22"
-  VITE_API_BASE_URL = "https://oran-analiz-pro.onrender.com"
+  VITE_API_BASE_URL = "https://oran-api.185-23-75-42.sslip.io"

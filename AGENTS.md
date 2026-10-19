@@ -75,7 +75,7 @@ After lookup changes, run the regression suite and a live query. For UI changes,
 
 ## Commit, Pull Request & Deployment Guidelines
 
-Use short imperative subjects, such as `Harden historical match lookup`. Pull requests must describe behavior, affected areas, and test results; include screenshots for UI work. Keep `netlify.toml` and `.github/workflows/` synchronized. GitHub Pages and Netlify use the Render API through `VITE_API_BASE_URL`; Render intentionally has no `render.yaml`.
+Use short imperative subjects, such as `Harden historical match lookup`. Pull requests must describe behavior, affected areas, and test results; include screenshots for UI work. Keep `netlify.toml` and `.github/workflows/` synchronized. GitHub Pages and Netlify use the VDS API at `https://oran-api.185-23-75-42.sslip.io` through `VITE_API_BASE_URL`; GitHub Actions reads the repository variable `API_BASE_URL`. The API runs on Ubuntu under the `oran-analiz` systemd service behind Caddy with automatic HTTPS, with its application checkout at `/opt/oran-analiz-pro`. The previous Render service is retained for rollback and intentionally has no `render.yaml`.
 
 ## Security & Reliability
 
@@ -87,7 +87,8 @@ This is the latest recorded local verification, not a permanent test-count requi
 
 - 56 automated tests passed with `npm run test:historical` on standalone Node.js v24.22.0. New coverage includes provider cooldown/recovery, Retry-After formats, malformed Mackolik daily feeds, and trying later candidates after an individual request fails.
 - Live local Roma–Genoa Sahadan H2H discovery returned 10 rows. A Mackolik daily-feed query for Roma–Genoa on 2025-01-17 returned one candidate. These checks do not establish odds-archive availability or access from Render.
-- The production Render H2H endpoint returned `sahadan: HTTP 429` during the investigation. The local backend changes have not been deployed.
+- The production Render endpoints returned provider HTTP 429 responses during the investigation. Backend commit `d8cafdc` was subsequently deployed to Render, where the rate limit remained.
+- The same backend was installed on the VDS with Node.js v24.22.0, automatic systemd startup and HTTPS. All 56 tests passed on the VDS. An external HTTPS Betis–Barcelona pair search returned 51 verified Nesine markets for 2026-10-17; Sahadan H2H returned 10 initial-table rows. These checks establish access for these queries at verification time, not guaranteed future provider access.
 - The production frontend build with the Render API URL succeeded before publication. No frontend files changed; lint and browser interaction checks were not repeated. The earlier UI verification and its limitations are recorded below.
 
 ### Earlier Verification — 2026-09-08

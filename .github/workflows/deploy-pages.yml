@@ -36,7 +36,7 @@ jobs:
       - name: Build
         working-directory: web/frontend
         env:
-          VITE_API_BASE_URL: ${{ vars.RENDER_API_URL }}
+          VITE_API_BASE_URL: ${{ vars.API_BASE_URL }}
           VITE_BASE_PATH: /oran-analiz-pro/
         run: npm run build
 
