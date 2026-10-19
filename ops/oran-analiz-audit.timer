@@ -1,0 +1,11 @@
+[Unit]
+Description=Run two rotating Oran Analiz pair probes daily
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Istanbul
+Persistent=true
+AccuracySec=1min
+Unit=oran-analiz-audit.service
+
+[Install]
+WantedBy=timers.target

@@ -1,4 +1,4 @@
-import { sourceJson } from './sourceHttp.js';
+import { SourceError, sourceJson, invalidateSourceCache } from './sourceHttp.js';
 import { MatchFinder } from './matchFinder.js';
 import { MarketParser } from './marketParser.js';
 import { MackolikScraper } from './MackolikScraper.js';
@@ -6,7 +6,10 @@ import { MackolikScraper } from './MackolikScraper.js';
 export class NesineService {
     async bulletin() {
         const data = await sourceJson('https://cdnbulten.nesine.com/api/bulten/getprebultenfull', { source: 'nesine', ttl: 30000, timeout: 10000 });
-        if (!Array.isArray(data?.sg?.EA)) throw new Error('Nesine bülten veri yapısı geçersiz.');
+        if (!Array.isArray(data?.sg?.EA)) {
+            invalidateSourceCache('https://cdnbulten.nesine.com/api/bulten/getprebultenfull');
+            throw new SourceError('Nesine bülten veri yapısı geçersiz.');
+        }
         return data.sg.EA;
     }
 
@@ -26,17 +29,22 @@ export class NesineService {
     }
 
     async recent(home, away) {
+        const errors = [];
         const dates = new MackolikScraper({ debug: false }).getRecentDateCandidates(7);
         const finder = new MatchFinder({ debug: false });
         for (let offset = 0; offset < dates.length; offset += 3) {
             const batch = await Promise.all(dates.slice(offset, offset + 3).map(async date => {
                 try {
                     const payload = await sourceJson(`https://ls.nesine.com/api/v2/LiveScore/GetUnliveMatches?sportType=1&date=${date}`, { source: 'nesine', ttl: 300000, timeout: 8000 });
-                    if (!Array.isArray(payload?.d)) throw new Error('Geçmiş Nesine yanıtı geçersiz.');
+                    if (!Array.isArray(payload?.d)) {
+                        invalidateSourceCache(`https://ls.nesine.com/api/v2/LiveScore/GetUnliveMatches?sportType=1&date=${date}`);
+                        throw new SourceError('Geçmiş Nesine yanıtı geçersiz.');
+                    }
                     const events = payload.d.map(m => ({ C: m.C, HN: m.HT, AN: m.AT, homeAliases: [m.HT, m.HTTR].filter(Boolean), awayAliases: [m.AT, m.ATTR].filter(Boolean), TYPE: 1, D: date }));
                     const found = finder.findMatch(events, { home, away });
                     return found.found && !found.isReversed ? { ...found.event, date } : null;
                 } catch (error) {
+                    errors.push(error);
                     console.warn(`[NesineRecent ${date}] ${error.message}`);
                     return null;
                 }
@@ -44,6 +52,7 @@ export class NesineService {
             const found = batch.find(Boolean);
             if (found) return found;
         }
+        if (errors.length) throw errors[0];
         return null;
     }
 }

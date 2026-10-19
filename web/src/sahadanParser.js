@@ -1,6 +1,6 @@
 import * as cheerio from 'cheerio';
 import { categorizeMarket } from './marketCategorizer.js';
-import { teamNamesMatch, normalizeTeamName } from '../../utils/normalize.js';
+import { teamNamesMatch, normalizeTeamName, teamIdentity } from '../../utils/normalize.js';
 import { SourceError } from './sourceHttp.js';
 
 // Decode Nuxt's reference table as data; never evaluate source scripts.
@@ -41,15 +41,21 @@ export function sameTeam(actual, expected) {
     return teamNamesMatch(actual, expected);
 }
 
-export function isPair(match, home, away, bothDirections = false) {
+export function isPair(match, home, away, bothDirections = false, expectedIds = {}) {
     const h = match.team_A?.display_name || match.team_A?.name;
     const a = match.team_B?.display_name || match.team_B?.name;
-    return (sameTeam(h, home) && sameTeam(a, away)) || (bothDirections && sameTeam(h, away) && sameTeam(a, home));
+    const matches = (actual, expected, actualId, expectedId) => {
+        if (typeof actual !== 'string' || !actual.trim()) return false;
+        return expectedId ? actualId === expectedId && teamIdentity(actual).qualifiers === teamIdentity(expected).qualifiers : sameTeam(actual, expected);
+    };
+    return (matches(h, home, match.team_A?.uuid, expectedIds.home) && matches(a, away, match.team_B?.uuid, expectedIds.away))
+        || (bothDirections && matches(h, away, match.team_A?.uuid, expectedIds.away) && matches(a, home, match.team_B?.uuid, expectedIds.home));
 }
 
-export function selectH2hSource(matches, home, away, referenceDate = new Date()) {
+export function selectH2hSource(matches, home, away, referenceDate = new Date(), expectedIds = {}, legacyExpectedIds) {
+    expectedIds = legacyExpectedIds || expectedIds;
     const now = referenceDate.getTime();
-    const candidates = matches.filter(match => isPair(match, home, away, true))
+    const candidates = matches.filter(match => isPair(match, home, away, true, expectedIds))
         .map(match => ({ match, kickoff: normalizeSahadanMatch(match).kickoff }))
         .filter(item => item.kickoff)
         .map(item => ({ ...item, timestamp: Date.parse(item.kickoff) }));
@@ -125,7 +131,9 @@ export function parseSahadanH2hTable(html, home, away) {
 
 export function normalizeSahadanMatch(raw) {
     const utc = String(raw.date_time_utc || '');
-    const hasTime = /\d{2}:\d{2}:\d{2}/.test(utc);
+    const day = utc.slice(0, 10);
+    const validDay = /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(day)) && new Date(day).toISOString().slice(0, 10) === day;
+    const hasTime = validDay && /\d{2}:\d{2}:\d{2}/.test(utc);
     const instant = hasTime ? new Date(utc.replace(' ', 'T') + (/Z$|[+-]\d\d:\d\d$/.test(utc) ? '' : 'Z')) : null;
     const parts = instant && Number.isFinite(instant.getTime()) ? Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
         timeZone: 'Europe/Istanbul', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
@@ -134,8 +142,8 @@ export function normalizeSahadanMatch(raw) {
     const away = raw.team_B?.display_name || raw.team_B?.name;
     const slug = raw.slug || normalizeTeamName(`${home} vs ${away}`).replaceAll(' ', '-');
     return {
-        id: raw.uuid, home, away, name: `${home} - ${away}`, code: raw.extras?.iddaa_code || null,
-        date: parts ? `${parts.year}-${parts.month}-${parts.day}` : utc.slice(0, 10),
+        id: raw.uuid, home, away, homeProviderId: raw.team_A?.uuid || null, awayProviderId: raw.team_B?.uuid || null, name: `${home} - ${away}`, code: raw.extras?.iddaa_code || null,
+        date: parts ? `${parts.year}-${parts.month}-${parts.day}` : validDay ? day : null,
         time: parts ? `${parts.hour}:${parts.minute}` : null,
         kickoff: instant && Number.isFinite(instant.getTime()) ? instant.toISOString() : null,
         timeZone: 'Europe/Istanbul', status: raw.status,
@@ -144,8 +152,8 @@ export function normalizeSahadanMatch(raw) {
     };
 }
 
-export function selectHistorical(matches, home, away, date) {
-    return matches.filter(m => m.status === 'Played' && isPair(m, home, away))
+export function selectHistorical(matches, home, away, date, expectedIds = {}) {
+    return matches.filter(m => m.status === 'Played' && isPair(m, home, away, false, expectedIds))
         .map(normalizeSahadanMatch)
         .filter(m => !date || m.date === date)
         .sort((a, b) => (b.kickoff || b.date).localeCompare(a.kickoff || a.date))[0] || null;

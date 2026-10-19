@@ -31,12 +31,13 @@ export function createMatchRequests({ apiBaseUrl = '', onMatch, onHistory, onSel
   }
 
   return {
-    searchPair(home, away, { source = 'mackolik' } = {}) {
-      const query = { home, away, source };
+    searchPair(home, away, { source = 'mackolik', homeTeamId, awayTeamId } = {}) {
+      const identities = { ...(homeTeamId ? { homeTeamId } : {}), ...(awayTeamId ? { awayTeamId } : {}) };
+      const query = { home, away, source, ...identities };
       onSelection(query);
       return Promise.allSettled([
         request('match', 'fetch-match', query),
-        request('history', 'head-to-head', { home, away })
+        request('history', 'head-to-head', { home, away, ...identities })
       ]);
     },
     selectMatch(match, source = 'mackolik') {

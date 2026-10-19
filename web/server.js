@@ -5,11 +5,14 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { MatchService, validateQuery } from './src/matchService.js';
 import { SahadanScraper } from './src/SahadanScraper.js';
-import { sourceTraces } from './src/sourceHttp.js';
+import { SourceError, sourceTraces, withSourceDeadline } from './src/sourceHttp.js';
+import { getReliabilityStore } from './src/reliabilityStore.js';
+import { getTeamDirectory } from './src/teamDirectory.js';
 
-const directory = path.dirname(fileURLToPath(import.meta.url));
+const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp({ service = new MatchService(), sahadan = new SahadanScraper() } = {}) {
+export function createApp({ service = new MatchService(), directory = service.directory || getTeamDirectory(),
+    sahadan = new SahadanScraper({ store: service.store || getReliabilityStore(), directory }) } = {}) {
     const app = express();
     app.use(cors());
     app.use(express.json());
@@ -24,8 +27,17 @@ export function createApp({ service = new MatchService(), sahadan = new SahadanS
     }
     app.get('/api/head-to-head', async (req, res, next) => {
         try {
-            const { home, away } = validateQuery(req.query, { pairRequired: true });
-            res.json(await sahadan.headToHead(home, away));
+            const query = validateQuery(req.query, { pairRequired: true });
+            const { home, away, teamIdentities } = service.resolveTeams ? await service.resolveTeams(query) : query;
+            res.json(await sahadan.headToHead(home, away, { teamIdentities }));
+        } catch (error) { next(error); }
+    });
+    app.get('/api/team-search', async (req, res, next) => {
+        try {
+            if (typeof req.query.q !== 'string' || req.query.q.length > 120) throw new SourceError('Geçersiz takım araması.', 400);
+            const q = req.query.q.trim();
+            const teams = q.length < 2 ? [] : await withSourceDeadline(() => directory.search(q), { timeoutMs: 12000 });
+            res.json({ success: true, teams });
         } catch (error) { next(error); }
     });
     app.get('/api/teams', async (_req, res, next) => {
@@ -43,10 +55,12 @@ export function createApp({ service = new MatchService(), sahadan = new SahadanS
     app.use((error, _req, res, _next) => {
         console.error(`[API] ${error.message}`);
         if (error.retryAfter) res.set('Retry-After', String(error.retryAfter));
-        res.status(error.status || 502).json({ success: false, status: 'ERROR', error: error.message });
+        const errorCode = error.retryAfter ? 'RATE_LIMITED' : error.status === 504 ? 'TIMEOUT'
+            : error.status === 400 ? 'INVALID_QUERY' : error.status === 404 ? 'NOT_FOUND' : 'PROVIDER_UNAVAILABLE';
+        res.status(error.status || 502).json({ success: false, status: 'ERROR', error: error.message, errorCode });
     });
-    const dist = path.join(directory, 'frontend', 'dist');
-    app.use(express.static(fs.existsSync(dist) ? dist : path.join(directory, 'public')));
+    const dist = path.join(serverDirectory, 'frontend', 'dist');
+    app.use(express.static(fs.existsSync(dist) ? dist : path.join(serverDirectory, 'public')));
     return app;
 }
 

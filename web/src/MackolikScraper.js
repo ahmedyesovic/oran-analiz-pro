@@ -6,9 +6,12 @@ import { promisify } from 'node:util';
 import { categorizeMarket, MAIN_CATEGORIES } from './marketCategorizer.js';
 import { nesineLink, sameTeam } from './sahadanParser.js';
 import { SourceError, sourceJson, sourceText } from './sourceHttp.js';
+import * as sourceHttp from './sourceHttp.js';
+import { providerTeamIds } from './verifiedCache.js';
 import {
     normalizeTeamName as normalizeSharedTeamName,
-    teamNamesMatch as sharedTeamNamesMatch
+    teamNamesMatch as sharedTeamNamesMatch,
+    teamIdentity
 } from '../../utils/normalize.js';
 
 puppeteer.use(StealthPlugin());
@@ -19,12 +22,37 @@ export class MackolikScraper {
     constructor(options = {}) {
         this.debug = options.debug ?? true;
         this.browser = null;
+        this.browserTail = Promise.resolve();
+        this.directory = options.directory || null;
     }
 
     log(msg) {
         if (this.debug) {
             console.log(`[MackolikScraper] ${msg}`);
         }
+    }
+
+    withBrowserLock(work) {
+        const signal = sourceHttp.getSourceDeadlineSignal?.();
+        const start = () => {
+            if (signal?.aborted) throw signal.reason;
+            sourceHttp.assertSourceDeadline?.();
+            return work();
+        };
+        const result = this.browserTail.then(start, start);
+        this.browserTail = result.catch(() => {});
+        return result;
+    }
+
+    verifiedSearchResults(html, status = 200) {
+        if (status !== 200 || /challenge-form|anomaly-modal|anomaly\.js/i.test(html)) {
+            throw new SourceError('mackolik: web araması kaynak tarafından tamamlanamadı.');
+        }
+        const results = this.extractSearchResults(html);
+        if (results.length) return results;
+        const $ = cheerio.load(html || '');
+        if ($('.result, .no-results, .result--no-result').length || /No results found/i.test(html)) return [];
+        throw new SourceError('mackolik: web arama yanıtı doğrulanamadı.');
     }
 
     async initBrowser() {
@@ -163,14 +191,18 @@ export class MackolikScraper {
         return sameTeam(actual, expected);
     }
 
-    matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate) {
+    matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities) {
         const expectedDate = this.canonicalDate(matchDate);
         const actualDate = this.canonicalDate(parsed?.matchDate);
         if (!actualDate || (expectedDate && expectedDate !== actualDate)) return false;
 
         if (parsed?.homeTeam && parsed?.awayTeam) {
-            return this.teamNamesMatch(parsed.homeTeam, homeTeam)
-                && this.teamNamesMatch(parsed.awayTeam, awayTeam);
+            const ids = providerTeamIds(teamIdentities, 'mackolik');
+            const matches = (side, expected) => ids[side]
+                ? parsed[`${side}TeamId`] === ids[side]
+                    && teamIdentity(parsed[`${side}Team`]).qualifiers === teamIdentity(expected).qualifiers
+                : this.teamNamesMatch(parsed[`${side}Team`], expected);
+            return matches('home', homeTeam) && matches('away', awayTeam);
         }
 
         return false;
@@ -207,7 +239,7 @@ export class MackolikScraper {
         return history;
     }
 
-    async findMackolikMatchesByDate(homeTeam, awayTeam, matchDate) {
+    async findMackolikMatchesByDate(homeTeam, awayTeam, matchDate, teamIdentities) {
         const canonicalMatchDate = this.canonicalDate(matchDate);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(canonicalMatchDate)) return [];
 
@@ -222,15 +254,19 @@ export class MackolikScraper {
                 throw new SourceError('mackolik: tarih listesi yanıtı geçersiz.');
             }
             const matches = Object.values(payload.data.matches);
-            if (matches.some(match => !match?.id || !match.homeTeam?.name || !match.awayTeam?.name
+            if (matches.some(match => !/^[a-z0-9]{1,64}$/.test(match?.id || '') || !match.homeTeam?.name || !match.awayTeam?.name
                 || !(match.matchSlug || (match.homeTeam.slug && match.awayTeam.slug)))) {
                 throw new SourceError('mackolik: tarih listesindeki maç bilgileri geçersiz.');
             }
             const [year, month, day] = canonicalMatchDate.split('-');
 
+            const ids = providerTeamIds(teamIdentities, 'mackolik');
+            const matchesTeam = (actual, expected, id) => id
+                ? String(actual?.id) === id && teamIdentity(actual.name).qualifiers === teamIdentity(expected).qualifiers
+                : this.teamNamesMatch(actual?.name, expected);
             const results = matches
-                .filter(match => this.teamNamesMatch(match?.homeTeam?.name, homeTeam)
-                    && this.teamNamesMatch(match?.awayTeam?.name, awayTeam))
+                .filter(match => matchesTeam(match?.homeTeam, homeTeam, ids.home)
+                    && matchesTeam(match?.awayTeam, awayTeam, ids.away))
                 .map(match => {
                     const matchId = match?.id;
                     const matchSlug = match?.matchSlug
@@ -239,6 +275,11 @@ export class MackolikScraper {
 
                     return {
                         url: `https://www.mackolik.com/mac/${matchSlug}/iddaa/${matchId}`,
+                        matchId,
+                        homeTeamId: match.homeTeam.id || null,
+                        awayTeamId: match.awayTeam.id || null,
+                        homeTeamName: match.homeTeam.name,
+                        awayTeamName: match.awayTeam.name,
                         title: `${match.matchName || `${homeTeam} vs ${awayTeam}`}, ${day}.${month}.${year}`
                     };
                 })
@@ -258,6 +299,7 @@ export class MackolikScraper {
     }
 
     async searchMackolikWithHttp(query) {
+        let searchError = null;
         const endpoints = [
             'https://html.duckduckgo.com/html/',
             'https://duckduckgo.com/html/'
@@ -268,8 +310,9 @@ export class MackolikScraper {
             try {
                 const searchUrl = `${endpoint}?q=${encodeURIComponent(query)}`;
                 this.log(`Tarayıcısız arama deneniyor: ${searchUrl}`);
+                const results = await sourceHttp.runSourceTask(searchUrl, async ({ signal }) => {
                 const response = await fetch(searchUrl, {
-                    signal: request.signal,
+                    signal,
                     headers: {
                         // DuckDuckGo HTML endpoint'i tam Chrome UA ile bot sayfası
                         // döndürebildiği için sade UA kullanıyoruz.
@@ -278,14 +321,16 @@ export class MackolikScraper {
                         'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
                     }
                 });
-
-                if (!response.ok) continue;
-                const results = this.extractSearchResults(await response.text());
+                sourceHttp.sourceResponseStatus(searchUrl, response.status, response.headers, { source: 'search' });
+                return this.verifiedSearchResults(await response.text(), response.status);
+                }, { source: 'search', timeout: 15000 });
                 if (results.length > 0) {
                     this.log(`Tarayıcısız aramada ${results.length} Mackolik sonucu bulundu.`);
                     return results;
                 }
+                return [];
             } catch (error) {
+                searchError = error;
                 this.log(`Tarayıcısız arama başarısız: ${error.message}`);
             } finally {
                 request.clear();
@@ -298,28 +343,32 @@ export class MackolikScraper {
         const curlUrl = `${endpoints[0]}?q=${encodeURIComponent(query)}`;
         try {
             this.log(`curl ile tarayıcısız arama deneniyor: ${curlUrl}`);
+            const results = await sourceHttp.runSourceTask(curlUrl, async ({ signal }) => {
             const { stdout } = await execFileAsync('curl', [
                 '-fsS',
                 '--max-time', '20',
                 '-A', 'Mozilla/5.0',
                 curlUrl
             ], {
+                signal,
                 maxBuffer: 5 * 1024 * 1024
             });
-
-            const results = this.extractSearchResults(stdout);
+            return this.verifiedSearchResults(stdout);
+            }, { source: 'search', timeout: 20000, deduplicate: false });
             if (results.length > 0) {
                 this.log(`curl aramasında ${results.length} Mackolik sonucu bulundu.`);
                 return results;
             }
+            return [];
         } catch (error) {
+            searchError = error;
             this.log(`curl araması başarısız: ${error.message}`);
         }
 
-        return [];
+        throw searchError instanceof SourceError ? searchError : new SourceError('mackolik: web aramasına bağlantı kurulamadı.');
     }
 
-    async tryHttpCandidates(searchResults, homeTeam, awayTeam, matchDate, triedUrls) {
+    async tryHttpCandidates(searchResults, homeTeam, awayTeam, matchDate, triedUrls, teamIdentities) {
         let candidateError = null;
         const sorted = [...searchResults].sort((a, b) => {
             const date = item => this.canonicalDate(item.title.match(/\d{2}\.\d{2}\.\d{4}/)?.[0]);
@@ -335,8 +384,33 @@ export class MackolikScraper {
                 this.log(`Doğrudan Mackolik sayfası deneniyor: ${finalIddaaUrl}`);
                 const html = await sourceText(finalIddaaUrl, { source: 'mackolik', ttl: 300000 });
                 const parsed = this.parseMackolikIddaa(html, finalIddaaUrl);
-                if (!parsed || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate)) continue;
-                if (!parsed.score) continue;
+                const expectedMatchId = new URL(finalIddaaUrl).pathname.split('/').pop();
+                if (parsed?.matchId !== expectedMatchId
+                    || (item.homeTeamId && (parsed?.matchId !== item.matchId
+                        || parsed.homeTeamId !== item.homeTeamId || parsed.awayTeamId !== item.awayTeamId))) {
+                    sourceHttp.invalidateSourceCache?.(finalIddaaUrl);
+                    throw new SourceError('mackolik: günlük liste ve arşivdeki maç/takım kimliği uyuşmuyor.');
+                }
+                // The daily names were matched to this query before opening the
+                // archive. Canonical match and both header IDs above bind those
+                // names to the current header, including a verified name change.
+                let verifiedIdentities = teamIdentities;
+                if (item.homeTeamId && item.awayTeamId && item.homeTeamName && item.awayTeamName) {
+                    const selected = providerTeamIds(teamIdentities, 'mackolik');
+                    if (['home', 'away'].some(side => selected[side] && selected[side] !== item[`${side}TeamId`])) continue;
+                    const feedMatches = ['home', 'away'].every(side => {
+                        const expected = side === 'home' ? homeTeam : awayTeam;
+                        return selected[side] ? teamIdentity(item[`${side}TeamName`]).qualifiers === teamIdentity(expected).qualifiers
+                            : this.teamNamesMatch(item[`${side}TeamName`], expected);
+                    });
+                    if (!feedMatches) continue;
+                    verifiedIdentities = Object.fromEntries(['home', 'away'].map(side => [side, {
+                        providers: [{ source: 'mackolik', providerId: item[`${side}TeamId`] }]
+                    }]));
+                }
+                if (!parsed || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, verifiedIdentities)) continue;
+                if (!parsed.score) throw new SourceError('mackolik: tamamlanmış maçın sonucu doğrulanamadı.');
+                this.rememberTeams(parsed, item);
                 this.log('Mackolik oranları tarayıcısız olarak bulundu.');
                 return parsed;
             } catch (error) {
@@ -355,7 +429,7 @@ export class MackolikScraper {
     /**
      * İki takımın geçmiş maçını bulur ve oranlarını getirir.
      */
-    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null, matchId = null) {
+    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null, matchId = null, { teamIdentities } = {}) {
         this.log(`Taranıyor: ${homeTeam} vs ${awayTeam} ${matchDate ? '(' + matchDate + ')' : ''}`);
 
         // H2H selection already supplies the stable provider ID. Open that page
@@ -366,10 +440,11 @@ export class MackolikScraper {
             const url = `https://www.mackolik.com/mac/${slug}/iddaa/${matchId}`;
             const html = await sourceText(url, { source: 'mackolik', ttl: 300000 });
             const parsed = this.parseMackolikIddaa(html, url);
-            if (parsed.matchId !== matchId || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate) || !parsed.score) {
+            if (parsed.matchId !== matchId || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities) || !parsed.score) {
                 throw new SourceError('Seçilen Mackolik maçının kimlik, takım, tarih veya sonuç bilgisi doğrulanamadı.');
             }
             this.log(`Seçilen maç doğrudan kimliğiyle doğrulandı: ${matchId}`);
+            this.rememberTeams(parsed);
             return parsed;
         }
 
@@ -380,6 +455,7 @@ export class MackolikScraper {
             : (matchDate || '');
         const query = `site:mackolik.com ${homeTeam} ${awayTeam} mac detay ${searchDate}`;
         const triedUrls = new Set();
+        const discoveryErrors = [];
         const dateCandidates = dateParts
             ? [canonicalMatchDate]
             : this.getRecentDateCandidates(7);
@@ -388,47 +464,63 @@ export class MackolikScraper {
         // tara. Üçlü gruplar gecikmeyi sınırlarken sağlayıcıya aşırı yük bindirmez.
         for (let offset = 0; offset < dateCandidates.length; offset += 3) {
             const dateBatch = dateCandidates.slice(offset, offset + 3);
-            const batchResults = await Promise.all(
-                dateBatch.map(date => this.findMackolikMatchesByDate(homeTeam, awayTeam, date))
+            const batchResults = await Promise.allSettled(
+                dateBatch.map(date => this.findMackolikMatchesByDate(homeTeam, awayTeam, date, teamIdentities))
             );
 
             for (let index = 0; index < batchResults.length; index++) {
-                const dateResult = await this.tryHttpCandidates(
-                    batchResults[index],
-                    homeTeam,
-                    awayTeam,
-                    dateBatch[index],
-                    triedUrls
-                );
-                if (dateResult) return dateResult;
+                if (batchResults[index].status === 'rejected') {
+                    discoveryErrors.push(batchResults[index].reason);
+                    continue;
+                }
+                try {
+                    const dateResult = await this.tryHttpCandidates(
+                        batchResults[index].value, homeTeam, awayTeam, dateBatch[index], triedUrls, teamIdentities
+                    );
+                    if (dateResult) return dateResult;
+                } catch (error) { discoveryErrors.push(error); }
             }
+            const limited = discoveryErrors.find(error => error.upstreamStatus === 429);
+            if (limited) throw limited;
         }
 
-        const httpResults = await this.searchMackolikWithHttp(query);
-        const httpResult = await this.tryHttpCandidates(
-            httpResults,
-            homeTeam,
-            awayTeam,
-            matchDate,
-            triedUrls
-        );
-        if (httpResult) return httpResult;
-
-        let page = null;
         try {
+            const httpResults = await this.searchMackolikWithHttp(query);
+            const httpResult = await this.tryHttpCandidates(httpResults, homeTeam, awayTeam, matchDate, triedUrls, teamIdentities);
+            if (httpResult) return httpResult;
+        } catch (error) { discoveryErrors.push(error); }
+
+        return this.withBrowserLock(() => this.scrapeWithBrowser({ query, homeTeam, awayTeam, matchDate, triedUrls, discoveryErrors, teamIdentities }));
+    }
+
+    async scrapeWithBrowser({ query, homeTeam, awayTeam, matchDate, triedUrls, discoveryErrors, teamIdentities }) {
+        let page = null;
+        const signal = sourceHttp.getSourceDeadlineSignal?.();
+        const cancel = () => {
+            page?.close().catch(() => {});
+            this.closeBrowser().catch(() => {});
+        };
+        signal?.addEventListener('abort', cancel, { once: true });
+        try {
+            sourceHttp.assertSourceDeadline?.();
             this.log('HTTP yolu sonuç vermedi. Puppeteer yedek yolu deneniyor.');
             await this.initBrowser();
+            sourceHttp.assertSourceDeadline?.();
             page = await this.browser.newPage();
+            sourceHttp.assertSourceDeadline?.();
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
             const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
             this.log(`Gidiliyor: ${searchUrl}`);
-            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-
-            const searchResults = this.extractSearchResults(await page.content());
+            const searchResults = await sourceHttp.runSourceTask(searchUrl, async () => {
+                const response = await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                sourceHttp.sourceResponseStatus(searchUrl, response?.status() || 502, response?.headers() || {}, { source: 'search' });
+                return this.verifiedSearchResults(await page.content(), response?.status() || 502);
+            }, { source: 'search', timeout: 15000, deduplicate: false });
 
             if (!searchResults || searchResults.length === 0) {
                 this.log('Maç linki arama sonuçlarında bulunamadı.');
+                if (discoveryErrors.length) throw discoveryErrors[0];
                 return null;
             }
 
@@ -437,7 +529,8 @@ export class MackolikScraper {
                 homeTeam,
                 awayTeam,
                 matchDate,
-                triedUrls
+                triedUrls,
+                teamIdentities
             );
             if (browserHttpResult) return browserHttpResult;
 
@@ -447,22 +540,49 @@ export class MackolikScraper {
                 if (!finalIddaaUrl) continue;
 
                 this.log(`Puppeteer ile iddaa sayfasına gidiliyor: ${finalIddaaUrl}`);
-                await page.goto(finalIddaaUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-                const parsed = this.parseMackolikIddaa(await page.content(), finalIddaaUrl);
-                if (!parsed || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate)) continue;
+                const open = async ({ signal } = {}) => {
+                    const cancel = () => { page.close().catch(() => {}); };
+                    signal?.addEventListener('abort', cancel, { once: true });
+                    try {
+                        const response = await page.goto(finalIddaaUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                        sourceHttp.sourceResponseStatus?.(finalIddaaUrl, response?.status() || 502, response?.headers() || {}, { source: 'mackolik' });
+                        return await page.content();
+                    } finally { signal?.removeEventListener('abort', cancel); }
+                };
+                const html = sourceHttp.runSourceTask
+                    ? await sourceHttp.runSourceTask(finalIddaaUrl, open, { source: 'mackolik', timeout: 25000, deduplicate: false }) : await open();
+                const parsed = this.parseMackolikIddaa(html, finalIddaaUrl);
+                const expectedId = new URL(finalIddaaUrl).pathname.split('/').pop();
+                if (!parsed || parsed.matchId !== expectedId || !parsed.score
+                    || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities)) continue;
 
                 parsed.history = history;
+                this.rememberTeams(parsed);
                 return parsed;
             }
 
+            if (discoveryErrors.length) throw discoveryErrors[0];
             return null;
 
         } catch (error) {
             this.log(`Hata oluştu: ${error.message}`);
             throw error instanceof SourceError ? error : new SourceError(`mackolik: geçmiş maç sorgusu tamamlanamadı: ${error.message}`);
         } finally {
-            if (page) await page.close();
-            await this.closeBrowser();
+            signal?.removeEventListener('abort', cancel);
+            if (page) await page.close().catch(() => {});
+            await this.closeBrowser().catch(() => {});
+        }
+    }
+
+    rememberTeams(parsed, dailyEvidence = {}) {
+        for (const side of ['home', 'away']) {
+            const providerId = parsed[`${side}TeamId`];
+            if (!providerId || !this.directory) continue;
+            const name = parsed[`${side}Team`];
+            const previous = this.directory.lookupProvider?.('mackolik', providerId);
+            const aliases = [previous?.name, dailyEvidence[`${side}TeamName`]].filter(alias => alias
+                && teamIdentity(alias).qualifiers === teamIdentity(name).qualifiers);
+            this.directory.observe({ source: 'mackolik', providerId, name, aliases });
         }
     }
 
@@ -588,6 +708,27 @@ export class MackolikScraper {
         const canonicalIddaaUrl = canonicalUrl ? this.toIddaaUrl(canonicalUrl) : null;
         const matchId = canonicalIddaaUrl ? new URL(canonicalIddaaUrl).pathname.split('/').pop() : null;
 
+        const headerTeam = side => {
+            const link = $(`.p0c-soccer-match-details-header__team-name--${side}`).first();
+            if (!link.length) return null;
+            let url;
+            try { url = new URL(link.attr('href'), 'https://www.mackolik.com'); } catch { throw new SourceError('mackolik: takım bağlantısı geçersiz.'); }
+            const parts = url.pathname.split('/').filter(Boolean);
+            const id = parts.at(-1);
+            const name = link.text().trim();
+            if (url.origin !== 'https://www.mackolik.com' || parts[0] !== 'takim' || !/^[a-z0-9]{1,64}$/.test(id || '') || !name) {
+                throw new SourceError('mackolik: takım kimliği doğrulanamadı.');
+            }
+            return { id, name };
+        };
+        const homeIdentity = headerTeam('home');
+        const awayIdentity = headerTeam('away');
+        if (Boolean(homeIdentity) !== Boolean(awayIdentity)) throw new SourceError('mackolik: takım kimlikleri eksik.');
+        if (homeIdentity) {
+            homeTeam = homeIdentity.name;
+            awayTeam = awayIdentity.name;
+        }
+
         return {
             sourceUrl: matchUrl,
             matchId,
@@ -598,6 +739,8 @@ export class MackolikScraper {
             matchDate: matchDate,
             homeTeam: homeTeam,
             awayTeam: awayTeam,
+            homeTeamId: homeIdentity?.id || null,
+            awayTeamId: awayIdentity?.id || null,
             score: score,
             providers: nesineMarketCount ? [
                 { 

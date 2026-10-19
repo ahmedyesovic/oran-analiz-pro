@@ -1,18 +1,30 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Loader2 } from 'lucide-react';
+import TeamSearchInput from './TeamSearchInput';
+import { createTeamSuggestions } from '../utils/teamSuggestions';
 
-export default function MatchSearch({ onSearch, onClear, loading, selection }) {
-  const [home, setHome] = useState('');
-  const [away, setAway] = useState('');
+const emptyField = { value: '', selectedId: null, teams: [], loading: false, error: null, open: false, activeIndex: -1 };
+
+export default function MatchSearch({ onSearch, onClear, loading, selection, apiBaseUrl = '' }) {
+  const [homeState, setHomeState] = useState(emptyField);
+  const [awayState, setAwayState] = useState(emptyField);
+  const [homeSuggestions] = useState(() => createTeamSuggestions({ apiBaseUrl, onState: setHomeState }));
+  const [awaySuggestions] = useState(() => createTeamSuggestions({ apiBaseUrl, onState: setAwayState }));
+  const home = homeState.value;
+  const away = awayState.value;
   const [source, setSource] = useState('mackolik');
   const homeInput = useRef(null);
   useEffect(() => {
     if (selection) {
-      setHome(selection.home);
-      setAway(selection.away);
+      homeSuggestions.replace(selection.home, selection.homeTeamId);
+      awaySuggestions.replace(selection.away, selection.awayTeamId);
       setSource(selection.source);
     }
-  }, [selection]);
+  }, [selection, homeSuggestions, awaySuggestions]);
+  useEffect(() => () => {
+    homeSuggestions.dispose();
+    awaySuggestions.dispose();
+  }, [homeSuggestions, awaySuggestions]);
 
   function parseMatchInput(input) {
     if (!input) return null;
@@ -35,37 +47,30 @@ export default function MatchSearch({ onSearch, onClear, loading, selection }) {
     if (loading) return;
     let h = home.trim();
     let a = away.trim();
+    let homeTeamId = homeState.selectedId;
+    let awayTeamId = awayState.selectedId;
     if (h && !a) {
       const parsed = parseMatchInput(h);
       if (parsed) {
         h = parsed.home;
         a = parsed.away;
-        setHome(h);
-        setAway(a);
+        homeSuggestions.replace(h);
+        awaySuggestions.replace(a);
+        homeTeamId = null;
+        awayTeamId = null;
       }
     }
     if (!h || !a) return;
-    onSearch(h, a, { source });
+    homeSuggestions.dismiss();
+    awaySuggestions.dismiss();
+    onSearch(h, a, { source, ...(homeTeamId ? { homeTeamId } : {}), ...(awayTeamId ? { awayTeamId } : {}) });
   };
 
   const handleClear = () => {
-    setHome('');
-    setAway('');
+    homeSuggestions.clear();
+    awaySuggestions.clear();
     onClear();
     homeInput.current?.focus();
-  };
-
-  const inputStyle = {
-    width: '100%',
-    padding: '0.875rem 1rem',
-    background: 'var(--input-bg)',
-    border: '1px solid var(--panel-border)',
-    borderRadius: '0.75rem',
-    color: 'var(--text-primary)',
-    fontFamily: 'inherit',
-    fontSize: '1rem',
-    outline: 'none',
-    transition: 'all 0.2s'
   };
 
   const labelStyle = {
@@ -80,37 +85,12 @@ export default function MatchSearch({ onSearch, onClear, loading, selection }) {
     <section className="glass-panel animate-fade-in match-search">
       <form onSubmit={handleSubmit} className="match-search-form">
         
-        <div className="match-search-field">
-          <label htmlFor="home" style={labelStyle}>Ev Sahibi</label>
-          <input 
-            id="home"
-            ref={homeInput}
-            type="text" 
-            placeholder="Örn: Genoa"
-            value={home} 
-            onChange={(e) => setHome(e.target.value)} 
-            style={inputStyle}
-            onFocus={(e) => { e.target.style.borderColor = 'var(--accent)'; e.target.style.boxShadow = '0 0 0 2px var(--focus-ring)'; }}
-            onBlur={(e) => { e.target.style.borderColor = 'var(--panel-border)'; e.target.style.boxShadow = 'none'; }}
-          />
-        </div>
-        
+        <TeamSearchInput id="home" label="Ev Sahibi" placeholder="Örn: Genoa"
+          inputRef={homeInput} state={homeState} controller={homeSuggestions} />
         <div className="match-search-versus" aria-hidden="true">VS</div>
-        
-        <div className="match-search-field">
-          <label htmlFor="away" style={labelStyle}>Deplasman</label>
-          <input 
-            id="away"
-            type="text" 
-            placeholder="Örn: Como"
-            value={away} 
-            onChange={(e) => setAway(e.target.value)} 
-            style={inputStyle}
-            onFocus={(e) => { e.target.style.borderColor = 'var(--accent)'; e.target.style.boxShadow = '0 0 0 2px var(--focus-ring)'; }}
-            onBlur={(e) => { e.target.style.borderColor = 'var(--panel-border)'; e.target.style.boxShadow = 'none'; }}
-          />
-        </div>
-        
+        <TeamSearchInput id="away" label="Deplasman" placeholder="Örn: Como"
+          state={awayState} controller={awaySuggestions} />
+
         <div className="match-search-actions">
           <button type="submit" className="match-search-button match-search-submit"
             disabled={loading || (!home.trim() && !away.trim())} aria-busy={loading}>

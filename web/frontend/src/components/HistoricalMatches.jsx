@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronRight, ExternalLink, History } from 'lucide-react';
+import ArchiveNotice from './ArchiveNotice';
 
 function scoreParts(score) {
   return score?.match(/^(\d+)\s*-\s*(\d+)$/)?.slice(1) || ['—', '—'];
@@ -20,6 +21,7 @@ export default function HistoricalMatches({ data, loading, error, onSelectMatch,
           <ExternalLink size={14} aria-hidden="true" />
         </a> : 'Kaynak: Sahadan'}
       </p>
+      <ArchiveNotice archiveCache={data?.archiveCache} />
       {loading && <p className="historical-matches-message" role="status">Aralarındaki maçlar yükleniyor…</p>}
       {error && <p className="historical-matches-message historical-matches-error" role="alert">{error}</p>}
       {!loading && !error && !matches.length && <p className="historical-matches-message">Sahadan tablosunda karşılaşma bulunmuyor.</p>}

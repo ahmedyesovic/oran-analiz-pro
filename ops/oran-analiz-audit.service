@@ -1,0 +1,23 @@
+[Unit]
+Description=Oran Analiz daily local reliability audit
+After=network.target oran-analiz.service
+Requires=oran-analiz.service
+
+[Service]
+Type=oneshot
+User=oran-analiz
+Group=oran-analiz
+WorkingDirectory=/opt/oran-analiz-pro
+Environment=NODE_ENV=production
+Environment=ORAN_DATA_DIR=/var/lib/oran-analiz
+Environment=ORAN_AUDIT_BASE_URL=http://127.0.0.1:3000
+Environment=ORAN_AUDIT_TEAM_SEARCH=1
+ExecStart=/usr/local/bin/node /opt/oran-analiz-pro/web/scripts/reliabilityAudit.js
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/oran-analiz
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

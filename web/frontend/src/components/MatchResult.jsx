@@ -9,6 +9,7 @@ import {
   categoryToSlug 
 } from '../utils/aiExportRenderer';
 import { formatOddsForClipboard, copyToClipboard } from '../utils/helpers';
+import ArchiveNotice from './ArchiveNotice';
 
 export default function MatchResult({ data }) {
   const { match, isHistorical, oddsProvider, dataSource } = data || {};
@@ -114,6 +115,7 @@ export default function MatchResult({ data }) {
 
   return (
     <section className="glass-panel animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '1.75rem' }}>
+      {isHistorical === true && <ArchiveNotice archiveCache={data.archiveCache} />}
       {copyError && <p role="alert" style={{ color: 'var(--error)' }}>{copyError}</p>}
       
       {/* Üst Bilgi Kartı */}

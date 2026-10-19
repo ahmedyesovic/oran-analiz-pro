@@ -4,7 +4,7 @@
   "description": "Oran Analiz Pro - Bahis Oranları Analiz Sistemi",
   "type": "module",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "scripts": {
     "start": "node web/server.js",
@@ -13,6 +13,7 @@
     "test:historical": "node --test web/tests/*.test.js"
   },
   "dependencies": {
+    "better-sqlite3": "13.0.3",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
     "express": "^5.2.1",

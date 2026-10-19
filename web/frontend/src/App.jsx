@@ -4,6 +4,7 @@ import MatchResult from './components/MatchResult';
 import HistoricalFallback from './components/HistoricalFallback';
 import HistoricalMatches from './components/HistoricalMatches';
 import ThemeSelector from './components/ThemeSelector';
+import ArchiveNotice from './components/ArchiveNotice';
 import { createMatchRequests } from './utils/matchRequests';
 
 const API_BASE_URL = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
@@ -44,7 +45,7 @@ function App() {
         <div className={`match-workspace${selection ? ' match-workspace--with-history' : ''}`}>
           <div className="match-main">
             <MatchSearch onSearch={(home, away, options) => requests.searchPair(home, away, options)}
-              onClear={() => requests.clear()} loading={loading} selection={selection} />
+              onClear={() => requests.clear()} loading={loading} selection={selection} apiBaseUrl={API_BASE_URL} />
 
             {error && (
               <div className="animate-fade-in" style={{ background: 'var(--error-bg)', border: '1px solid var(--error)', color: 'var(--error-text)', padding: '1rem 1.25rem', borderRadius: '0.75rem', textAlign: 'center', fontWeight: 500 }}>
@@ -52,6 +53,7 @@ function App() {
               </div>
             )}
 
+            {matchData?.isHistorical === true && !matchData.hasOdds && <ArchiveNotice archiveCache={matchData.archiveCache} />}
             {matchData && !matchData.hasOdds && (
               <HistoricalFallback message={matchData.historicalMessage} />
             )}

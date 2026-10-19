@@ -175,7 +175,7 @@ test('Den Haag-PSV accepts the daily-feed names and verifies the expanded archiv
             } } } }));
         }
         assert.equal(String(url), archiveUrl);
-        return new Response(html);
+        return new Response(html.replace('<head>', `<head><link rel="canonical" href="${archiveUrl}">`));
     });
     const scraper = new MackolikScraper({ debug: false });
     const candidates = await scraper.findMackolikMatchesByDate('Den Haag', 'PSV', '2026-10-17');
@@ -254,7 +254,7 @@ test('Mackolik provider and malformed daily-feed failures are not reported as mi
 
 test('a failed Mackolik candidate does not prevent a later verified match from resolving', async t => {
     t.mock.method(globalThis, 'fetch', async url => String(url).endsWith('/stalecandidate')
-        ? new Response('Not Found', { status: 404 }) : new Response(mackolikMatchHtml));
+        ? new Response('Not Found', { status: 404 }) : new Response(mackolikMatchHtml.replace('<head>', `<head><link rel="canonical" href="${url}">`)));
     const result = await new MackolikScraper({ debug: false }).tryHttpCandidates([
         { url: 'https://www.mackolik.com/mac/laval-vs-red-star/iddaa/stalecandidate', title: '04.09.2026' },
         { url: 'https://www.mackolik.com/mac/laval-vs-red-star/iddaa/validcandidate', title: '04.09.2026' }
@@ -291,7 +291,7 @@ test('missing Nesine date uses Mackolik recent-date feed before web search', asy
         }
 
         if (url.includes('/mac/lavallois-vs-red-star/iddaa/')) {
-            return new Response(mackolikMatchHtml, {
+            return new Response(mackolikMatchHtml.replace('<head>', `<head><link rel="canonical" href="${url}">`), {
                 status: 200,
                 headers: { 'Content-Type': 'text/html' }
             });

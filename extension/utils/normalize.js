@@ -39,31 +39,31 @@ export function normalizeTeamName(value) {
 }
 
 const TEAM_ALIASES = new Map([
-    ['psv', 'psv eindhoven'],
-    ['psv eindhoven', 'psv eindhoven'],
-    ['sevilla', 'sevilla'],
-    ['sevillia', 'sevilla'],
-    ['manchester city', 'manchester city'],
-    ['man city', 'manchester city'],
-    ['athletic bilbao', 'athletic bilbao'],
-    ['athletico bilbao', 'athletic bilbao'],
-    ['bilbao', 'athletic bilbao'],
-    ['ath bilbao', 'athletic bilbao'],
-    ['a bilbao', 'athletic bilbao'],
-    ['athletic de bilbao', 'athletic bilbao']
+    ['psv', 'PSV Eindhoven'],
+    ['psv eindhoven', 'PSV Eindhoven'],
+    ['sevilla', 'Sevilla'],
+    ['sevillia', 'Sevilla'],
+    ['manchester city', 'Manchester City'],
+    ['man city', 'Manchester City'],
+    ['athletic bilbao', 'Athletic Bilbao'],
+    ['athletico bilbao', 'Athletic Bilbao'],
+    ['bilbao', 'Athletic Bilbao'],
+    ['ath bilbao', 'Athletic Bilbao'],
+    ['a bilbao', 'Athletic Bilbao'],
+    ['athletic de bilbao', 'Athletic Bilbao']
 ]);
 
-function teamIdentity(value) {
+export function teamIdentity(value) {
     const qualifiers = new Set();
     const rawName = (typeof value === 'string' ? value.trim() : '').replace(/\(\s*([bk])\s*\)/gi, (_, token) => {
         qualifiers.add(token.toLowerCase() === 'k' ? 'women' : 'b');
         return ' ';
     });
     const name = normalizeTeamName(rawName).replace(
-        /\b(?:u\s?\d{1,2}|ii|iii|iv|kadin|women(?: s|s)?|ladies|res|reserve|reserves)\b/g,
+        /\b(?:u\s?\d{1,2}|ii|iii|iv|kadin|women(?: s|s)?|ladies|res|reserve|reserves|jong)\b/g,
         token => {
             if (/^(?:kadin|women(?: s|s)?|ladies)$/.test(token)) qualifiers.add('women');
-            else if (/^(?:res|reserve|reserves)$/.test(token)) qualifiers.add('reserves');
+            else if (/^(?:res|reserve|reserves|jong)$/.test(token)) qualifiers.add('reserves');
             else qualifiers.add(token.replaceAll(' ', ''));
             return ' ';
         }
@@ -79,6 +79,16 @@ function teamIdentity(value) {
 function knownTeam(value) {
     const name = value.split(' ').filter(token => !TEAM_NAME_NOISE_TOKENS.has(token)).join(' ');
     return TEAM_ALIASES.get(name);
+}
+
+/**
+ * Return only explicitly listed aliases, retaining squad identity. Unlike
+ * teamNamesMatch this never accepts prefixes, acronyms or fuzzy tokens.
+ */
+export function explicitTeamAlias(value) {
+    const identity = teamIdentity(value);
+    const label = knownTeam(identity.name);
+    return label ? { name: normalizeTeamName(label), label, squad: identity.qualifiers || 'main' } : null;
 }
 
 function meaningfulTeamTokens(value) {

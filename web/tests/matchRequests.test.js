@@ -149,3 +149,38 @@ test('clearing in flight ignores late success and failure, and a new search stil
     assert.equal(state.selection.home, 'Arsenal');
     requests.dispose();
 });
+
+test('selected directory IDs accompany names in odds and H2H without changing historical selection', async () => {
+    const { state, calls, requests } = setup();
+    const pending = requests.searchPair('Manchester City', 'Ipswich', {
+        source: 'sahadan', homeTeamId: 'sahadan:city', awayTeamId: 'sahadan:ipswich'
+    });
+    for (const call of calls) {
+        assert.equal(call.url.searchParams.get('homeTeamId'), 'sahadan:city');
+        assert.equal(call.url.searchParams.get('awayTeamId'), 'sahadan:ipswich');
+    }
+    calls[0].finish({ success: true });
+    calls[1].finish({ success: true, matches: [] });
+    await pending;
+    assert.equal(state.selection.homeTeamId, 'sahadan:city');
+    const history = state.history;
+    const selected = requests.selectMatch({ id: 'old', home: 'Ipswich', away: 'Manchester City', date: '2001-01-01' }, 'sahadan');
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].url.searchParams.has('homeTeamId'), false);
+    assert.equal(state.history, history);
+    calls[2].finish({ success: true });
+    await selected;
+    requests.dispose();
+});
+
+test('free-text searches omit empty directory IDs and accept an ID for only one team', async () => {
+    const { calls, requests } = setup();
+    const pending = requests.searchPair('City', 'Ipswich', { homeTeamId: '', awayTeamId: 'sahadan:ipswich' });
+    for (const call of calls) {
+        assert.equal(call.url.searchParams.has('homeTeamId'), false);
+        assert.equal(call.url.searchParams.get('awayTeamId'), 'sahadan:ipswich');
+        call.finish({ success: true });
+    }
+    await pending;
+    requests.dispose();
+});
