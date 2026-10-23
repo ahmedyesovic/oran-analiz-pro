@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio';
 import { categorizeMarket } from './marketCategorizer.js';
 import { teamNamesMatch, normalizeTeamName, teamIdentity } from '../../utils/normalize.js';
 import { SourceError } from './sourceHttp.js';
+import { collectMsSets, isFullTimeMs, msLabel, msOutcome, msSnapshot } from './matchBand.js';
 
 // Decode Nuxt's reference table as data; never evaluate source scripts.
 export function parseNuxt(html) {
@@ -178,12 +179,23 @@ export function parseSahadanOdds(payload, match) {
     if (!match.code || String(data.sg_event_id) !== String(match.code)) throw new Error('Sahadan oran maç kimliği uyuşmuyor.');
     const markets = {};
     const evidence = [];
+    const msSets = [];
     for (const market of data.markets) {
         for (const provider of market.o || []) {
             const providerKey = String(provider.b);
             // The response maps provider IDs to explicit destinations. b=0 is an aggregate, not proof.
             const link = data.squad_links?.[providerKey] || data.image_links?.[providerKey];
             if (providerKey === '0' || !nesineLink(link)) continue;
+            if (isFullTimeMs(market.n)) {
+                const entries = [];
+                for (const odd of (provider.l || []).flat()) {
+                    if (!odd || !String(odd.i).startsWith(`${providerKey}_${match.code}-`)) continue;
+                    const label = msLabel(odd.n);
+                    if (label) entries.push({ label, outcome: msOutcome(odd.v, { hidden: Boolean(odd.isHidden) }) });
+                }
+                msSets.push(...collectMsSets(entries));
+                if (!evidence.some(item => item.providerId === providerKey)) evidence.push({ providerId: providerKey, url: link });
+            }
             const outcomes = {};
             for (const odd of (provider.l || []).flat()) {
                 if (!odd || odd.isHidden || !odd.n || !String(odd.i).startsWith(`${providerKey}_${match.code}-`)) continue;
@@ -197,5 +209,5 @@ export function parseSahadanOdds(payload, match) {
             if (!evidence.some(item => item.providerId === providerKey)) evidence.push({ providerId: providerKey, url: link });
         }
     }
-    return { markets, providerEvidence: evidence };
+    return { markets, providerEvidence: evidence, matchResultOdds: msSnapshot(msSets) };
 }

@@ -8,6 +8,7 @@ import { nesineLink, sameTeam } from './sahadanParser.js';
 import { SourceError, sourceJson, sourceText } from './sourceHttp.js';
 import * as sourceHttp from './sourceHttp.js';
 import { providerTeamIds } from './verifiedCache.js';
+import { collectMsSets, isFullTimeMs, msLabel, msOutcome, msSnapshot } from './matchBand.js';
 import {
     normalizeTeamName as normalizeSharedTeamName,
     teamNamesMatch as sharedTeamNamesMatch,
@@ -596,6 +597,7 @@ export class MackolikScraper {
         const $ = cheerio.load(html);
         const oddsData = {};
         const providerEvidence = [];
+        const msSets = [];
         let nesineMarketCount = 0;
         
         $('.widget-iddaa-markets__market-item').each((i, el) => {
@@ -620,6 +622,33 @@ export class MackolikScraper {
             let optionCount = 0;
             const lists = $(el).find('.widget-iddaa-markets__option-list').toArray();
             const verifiedLists = lists.length ? lists.filter(list => this.detectMarketProvider(list, $) === 'nesine') : [el];
+            if (isFullTimeMs(marketName)) {
+                for (const list of verifiedLists) {
+                    const entries = [];
+                    $(list).find('.widget-iddaa-markets__option').each((_, out) => {
+                        const label = msLabel($(out).find('.widget-iddaa-markets__label').text());
+                        if (!label) return;
+                        const valueNode = $(out).find('.widget-iddaa-markets__value');
+                        const currentValue = valueNode.clone();
+                        currentValue.find('del, s, [hidden], [aria-hidden="true"]').remove();
+                        currentValue.find('[style]').filter((_, node) =>
+                            /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test($(node).attr('style') || '')).remove();
+                        const text = currentValue.text().trim();
+                        const hidden = $(out).parents().addBack().add(valueNode).toArray().some(node =>
+                            $(node).is('[hidden], [aria-hidden="true"]')
+                            || /(?:display\s*:\s*none|visibility\s*:\s*hidden)/i.test($(node).attr('style') || ''));
+                        // Only explicit closure counts. Missing, faded or zero odds do not.
+                        const closed = $(out).attr('aria-disabled') === 'true'
+                            || $(out).find('[aria-label="Kilitli"], [aria-label="Kapalı"]').length > 0;
+                        entries.push({ label, outcome: msOutcome(text, { closed, hidden }) });
+                    });
+                    msSets.push(...collectMsSets(entries));
+                }
+                $(verifiedLists).find('a').each((_, a) => {
+                    const link = $(a).attr('data-mobile-href') || $(a).attr('href');
+                    if (nesineLink(link) && !providerEvidence.length) providerEvidence.push({ url: link });
+                });
+            }
             $(verifiedLists).find('.widget-iddaa-markets__option').each((j, out) => {
                 const name = $(out).find('.widget-iddaa-markets__label').text().trim();
                 const odd = $(out).find('.widget-iddaa-markets__value').text().trim();
@@ -734,6 +763,7 @@ export class MackolikScraper {
             matchId,
             oddsProvider: nesineMarketCount ? 'nesine' : null,
             providerEvidence,
+            matchResultOdds: msSnapshot(msSets),
             dataSource: 'mackolik',
             matchCode: matchCode,
             matchDate: matchDate,

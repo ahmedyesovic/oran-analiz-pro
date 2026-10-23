@@ -1,7 +1,8 @@
 import React from 'react';
 import { Info } from 'lucide-react';
+import BandClassification from './BandClassification';
 
-export default function HistoricalFallback({ message }) {
+export default function HistoricalFallback({ message, classification }) {
   return (
     <div className="glass-panel animate-fade-in" style={{ padding: '2rem', textAlign: 'center' }}>
       <div style={{
@@ -22,6 +23,7 @@ export default function HistoricalFallback({ message }) {
           {message}
         </p>
       </div>
+      <div style={{ marginTop: '1rem' }}><BandClassification result={classification} /></div>
     </div>
   );
 }

@@ -1,9 +1,10 @@
 import { NesineService } from './nesineService.js';
 import { HistoricalOddsSourceResolver } from './HistoricalOddsSourceResolver.js';
-import { SourceError, withSourceDeadline } from './sourceHttp.js';
+import { SourceError, withSourceDeadline, getSourceRemainingMs } from './sourceHttp.js';
 import { getReliabilityStore } from './reliabilityStore.js';
 import { getTeamDirectory, TeamDirectory } from './teamDirectory.js';
-import { ARCHIVE_VERSION, archiveKey, pairKey, archiveMetadata, verifiedArchive, saveVerified, providerTeamIds } from './verifiedCache.js';
+import { ARCHIVE_VERSION, archiveKey, pairKey, archiveMetadata, verifiedArchive, saveVerified, providerTeamIds, jsonValue } from './verifiedCache.js';
+import { classifyMatchBand, validMsSnapshot } from './matchBand.js';
 
 export function normalizeResponse(result) {
     const formattedMarkets = Object.values(result.markets || {}).flatMap(group => Object.entries(group)
@@ -11,6 +12,7 @@ export function normalizeResponse(result) {
         .map(([category, odds]) => ({ category, odds: Object.entries(odds).map(([name, value]) => ({ name, value })) })));
     return {
         ...result, success: true, hasOdds: formattedMarkets.length > 0,
+        bandClassification: classifyMatchBand(result.matchResultOdds, result.oddsProvider === 'nesine'),
         status: formattedMarkets.length ? 'FOUND' : 'ODDS_NOT_FOUND', formattedMarkets,
         matchName: result.match.name, matchDate: result.match.date, matchTime: result.match.time,
         matchCode: result.match.code, sourceUrl: result.match.sourceUrl, score: result.match.score,
@@ -19,12 +21,15 @@ export function normalizeResponse(result) {
 }
 
 export class MatchService {
-    constructor({ nesine = new NesineService(), historical, store = getReliabilityStore(), directory } = {}) {
+    constructor({ nesine = new NesineService(), historical, store = getReliabilityStore(), directory, clock = Date.now } = {}) {
         this.nesine = nesine;
         this.store = store;
         this.directory = directory || (store === getReliabilityStore() ? getTeamDirectory() : new TeamDirectory({ store }));
         this.historical = historical || new HistoricalOddsSourceResolver({ store, directory: this.directory });
         this.pending = new Map();
+        this.enrichmentPending = new Map();
+        this.enrichmentRetryUntil = new Map();
+        this.clock = clock;
     }
 
     lookup(query, mode = 'auto') {
@@ -59,6 +64,53 @@ export class MatchService {
         return normalizeResponse({ ...record.value, isHistorical: true, archiveCache: archiveMetadata(record) });
     }
 
+    recordEnrichmentRetry(key, until) {
+        this.enrichmentRetryUntil.set(key, until);
+        try { this.store.setRecord('band-enrichment-attempts', key, { until }); }
+        catch (error) { console.error(JSON.stringify({ event: 'band_retry_write_failed', error: error.code || error.name })); }
+    }
+
+    async enrichCachedArchive(query, cached) {
+        if (cached.matchResultOdds !== undefined || !cached.hasOdds) return cached;
+        const key = archiveKey(query.source, cached.match.id, cached.match.date);
+        const fallback = () => ({ ...cached, warnings: [...(cached.warnings || []),
+            'Bant bilgisi güncellenemedi; kayıtlı oranlar gösteriliyor. MS verisi daha sonra yeniden denenecek.'] });
+        // Reserve time for returning cached odds instead of racing the outer deadline.
+        const budget = Math.min(30000, getSourceRemainingMs() - 1000);
+        if (budget <= 0) return fallback();
+        let pending = this.enrichmentPending.get(key);
+        if (!pending) {
+            const attempt = this.store.getRecord('band-enrichment-attempts', key, { version: 1 });
+            if (Math.max(this.enrichmentRetryUntil.get(key) || 0, Number.isSafeInteger(attempt?.value?.until) ? attempt.value.until : 0) > this.clock()) return fallback();
+            // Persist before contacting the provider so restarts do not cause a retry burst.
+            this.recordEnrichmentRetry(key, this.clock() + 900000);
+            pending = (async () => {
+                try {
+                    const exact = { ...query, matchId: cached.match.id, date: cached.match.date };
+                    const result = await withSourceDeadline(() => this.historical.resolveHistoricalOdds(exact), { timeoutMs: budget });
+                    if (!result || !verifiedArchive(result, exact) || !normalizeResponse(result).hasOdds
+                        || !validMsSnapshot(result.matchResultOdds) || !result.matchResultOdds.sets.length
+                        || !result.matchResultOdds.sets.every(set => ['MS1', 'MS2'].some(label => ['open', 'closed'].includes(set[label].state)))) {
+                        return null;
+                    }
+                    this.store.setRecord('verified-archives', key, jsonValue(result), { version: ARCHIVE_VERSION });
+                    return normalizeResponse({ ...result, isHistorical: true, archiveCache: { savedAt: new Date(this.clock()).toISOString(), fromCache: false, stale: false } });
+                } catch (error) {
+                    const retryMs = Number(error.retryAfter) * 1000;
+                    const until = this.clock() + Math.max(900000, Number.isFinite(retryMs) && retryMs > 0 ? retryMs : 0);
+                    if (Number.isSafeInteger(until)) this.recordEnrichmentRetry(key, until);
+                    return null;
+                }
+            })();
+            this.enrichmentPending.set(key, pending);
+            pending.finally(() => { if (this.enrichmentPending.get(key) === pending) this.enrichmentPending.delete(key); }).catch(() => {});
+        }
+        let updated;
+        try { updated = await withSourceDeadline(() => pending, { timeoutMs: budget }); }
+        catch { return fallback(); }
+        return updated && verifiedArchive(updated, { ...query, matchId: cached.match.id, date: cached.match.date }) ? updated : fallback();
+    }
+
     async bindDiscoveredTeams(query, result) {
         const teamIdentities = { ...query.teamIdentities };
         const existingIds = providerTeamIds(teamIdentities, query.source);
@@ -80,7 +132,7 @@ export class MatchService {
         const errors = [];
         if (query.matchId && query.date) {
             const cached = this.cachedArchive(query, archiveKey(query.source, query.matchId, query.date));
-            if (cached) return cached;
+            if (cached) return this.enrichCachedArchive(query, cached);
         }
         if (!query.date && mode !== 'historical') {
             try {
@@ -102,7 +154,10 @@ export class MatchService {
         const pair = this.store.getRecord('archive-pairs', pairKey(query), { version: ARCHIVE_VERSION, maxAgeMs: 3600000 });
         if (!query.matchId && pair && (!date || pair.value.date === date)) {
             const cached = this.cachedArchive({ ...query, date: date || pair.value.date }, pair.value.key);
-            if (cached) return { ...cached, warnings };
+            if (cached) {
+                const response = await this.enrichCachedArchive(query, cached);
+                return { ...response, warnings: [...warnings, ...(response.warnings || [])] };
+            }
         }
         const result = await this.historical.resolveHistoricalOdds({ ...query, date });
         if (!result) {

@@ -23,6 +23,7 @@ export class NesineService {
         const date = /^\d{8}$/.test(rawDate) ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6)}` : rawDate;
         return {
             isHistorical: false, dataSource: 'nesine', oddsProvider: 'nesine', markets: parsed?.markets || {}, confidence: result.confidence,
+            matchResultOdds: parsed?.matchResultOdds,
             match: { home: event.HN, away: event.AN, name: `${event.HN} - ${event.AN}`, code: event.C, date, time: event.DAY_TIME || event.T || null },
             details: { league: event.LIG, status: event.MS }
         };

@@ -18,6 +18,7 @@ export class HistoricalOddsSourceResolver {
             date: this.scraper.canonicalDate(result.matchDate), time: result.matchTime || null,
             id: result.matchId, code: result.matchCode, score: result.score, sourceUrl: result.sourceUrl
         };
-        return { match, dataSource: 'mackolik', oddsProvider: provider ? 'nesine' : null, markets: provider?.odds || {}, providerEvidence: result.providerEvidence || [] };
+        return { match, dataSource: 'mackolik', oddsProvider: provider || result.providerEvidence?.length ? 'nesine' : null, markets: provider?.odds || {}, providerEvidence: result.providerEvidence || [],
+            matchResultOdds: result.matchResultOdds };
     }
 }

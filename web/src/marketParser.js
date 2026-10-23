@@ -4,6 +4,7 @@
  */
 
 import { TARGET_MARKETS, CATEGORIES } from '../../utils/marketMap.js';
+import { collectMsSets, emptyMsSet, msOutcome, msSnapshot } from './matchBand.js';
 
 export class MarketParser {
   constructor(options = {}) {
@@ -87,6 +88,17 @@ export class MarketParser {
       }
     }
 
+    const msSets = rawMarkets.filter(raw => raw.MTID === 1 && Number(raw.SOV ?? 0) === 0).flatMap(raw => {
+      const set = emptyMsSet();
+      if (raw.MS === 0) {
+        for (const label of Object.keys(set)) set[label] = msOutcome(null, { closed: true });
+        return [set];
+      }
+      return collectMsSets((raw.OCA || []).map(item => ({
+        label: ({ 1: 'MS1', 2: 'MSX', 3: 'MS2' })[item?.N], outcome: msOutcome(item?.O)
+      })));
+    });
+
     return {
       match: {
         code: matchCode,
@@ -101,6 +113,7 @@ export class MarketParser {
         }
       },
       markets: resultMarkets,
+      matchResultOdds: msSnapshot(msSets),
       metadata: {
         totalMarketsFound: foundMarketsCount,
         totalMarketsRequested: TARGET_MARKETS.length,

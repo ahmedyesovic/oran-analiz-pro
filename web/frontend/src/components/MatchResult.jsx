@@ -10,6 +10,7 @@ import {
 } from '../utils/aiExportRenderer';
 import { formatOddsForClipboard, copyToClipboard } from '../utils/helpers';
 import ArchiveNotice from './ArchiveNotice';
+import BandClassification from './BandClassification';
 
 export default function MatchResult({ data }) {
   const { match, isHistorical, oddsProvider, dataSource } = data || {};
@@ -144,6 +145,8 @@ export default function MatchResult({ data }) {
         <h2 style={{ fontSize: '2rem', fontWeight: 700, margin: '0.25rem 0', letterSpacing: '-0.5px' }}>
           {match.name || `${match.home} - ${match.away}`}
         </h2>
+
+        <BandClassification result={data.bandClassification} />
 
         {data.confidence && (
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>

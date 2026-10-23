@@ -55,7 +55,7 @@ function App() {
 
             {matchData?.isHistorical === true && !matchData.hasOdds && <ArchiveNotice archiveCache={matchData.archiveCache} />}
             {matchData && !matchData.hasOdds && (
-              <HistoricalFallback message={matchData.historicalMessage} />
+              <HistoricalFallback message={matchData.historicalMessage} classification={matchData.bandClassification} />
             )}
 
             {matchData?.warnings?.map(warning => <p key={warning} role="status">{warning}</p>)}

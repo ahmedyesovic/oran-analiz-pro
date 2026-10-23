@@ -64,6 +64,11 @@ export function getSourceDeadlineSignal() {
     return deadlines.getStore()?.signal || null;
 }
 
+export function getSourceRemainingMs() {
+    const context = deadlines.getStore();
+    return context ? Math.max(0, context.expires - Date.now()) : Infinity;
+}
+
 export function assertSourceDeadline() {
     const context = deadlines.getStore();
     if (context) checkDeadline(context);

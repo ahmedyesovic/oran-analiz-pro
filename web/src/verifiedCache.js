@@ -1,5 +1,6 @@
 import { normalizeTeamName, teamNamesMatch, teamIdentity } from '../../utils/normalize.js';
 import { nesineLink } from './sahadanParser.js';
+import { validMsSnapshot } from './matchBand.js';
 
 export const ARCHIVE_VERSION = 1;
 export const archiveKey = (source, id, date) => `${source}:${id}:${date}`;
@@ -34,6 +35,7 @@ const validScore = value => typeof value === 'string' && /^\d+ - \d+$/.test(valu
 const plainObject = value => value && typeof value === 'object' && !Array.isArray(value);
 
 export function verifiedArchive(value, query) {
+    if (value?.matchResultOdds !== undefined && !validMsSnapshot(value.matchResultOdds)) return false;
     const match = value?.match;
     const ids = providerTeamIds(query.teamIdentities, query.source);
     if (!match || value.dataSource !== query.source || !safeId(match.id) || !validDate(match.date) || !validScore(match.score)
@@ -56,7 +58,8 @@ export function verifiedArchive(value, query) {
             }
         }
     }
-    return odds === 0 || (value.oddsProvider === 'nesine' && Array.isArray(value.providerEvidence)
+    const hasMsEvidence = value.matchResultOdds?.sets.length > 0;
+    return (odds === 0 && !hasMsEvidence) || (value.oddsProvider === 'nesine' && Array.isArray(value.providerEvidence)
         && value.providerEvidence.some(item => nesineLink(item?.url)));
 }
 
