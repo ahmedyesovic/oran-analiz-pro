@@ -20,6 +20,6 @@
 ## Progress
 
 - Preflight: GitHub/local/VDS base `0ddf011`; production active.159 saved archives, all missing MS snapshots. SQLite outside checkout; previous API/hosting configuration remains valid. SSH key available; password unnecessary.
-- Implementation verification:239 tests pass; lint has four existing warnings; frontend build and 12 viewport/theme browser cases pass. Independent review found retry persistence and parent-deadline fallback edges; failing regressions reproduced both, fixes retain in-memory retry suppression and reserve1s for cached fallback. Archive save must succeed before reporting it saved.
+- Implementation verification: 239 tests pass; lint has four existing warnings; frontend build and 12 viewport/theme browser cases pass. Independent review found retry persistence and parent-deadline fallback edges; failing regressions reproduced both, fixes retain in-memory retry suppression and reserve 1s for cached fallback. Archive save must succeed before reporting it saved.
 - Release `3b235aa` deployed backend-first, then fast-forwarded to main. VDS239 tests/build pass; old Den Haag/PSV archives enriched for both providers, repeat/restart read durable snapshots. Production data directory unchanged, audit timer restored, previous code and two verified online backups retained.
 - Netlify deploy `6adbbbecba492e132419256d` and Pages workflow `40015338449` succeeded. Both sites serve `index-D5gkqYi7.js` and `index-CPkqiRO2.css`. See rollout verification document for actual browser/export coverage and limitations.
