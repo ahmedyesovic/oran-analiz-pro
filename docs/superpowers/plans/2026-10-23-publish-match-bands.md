@@ -12,12 +12,14 @@
 
 ## Release
 
-- [ ] Commit on `codex/publish-match-bands`, push the branch only; retain main until backend verified.
-- [ ] Take a private SQLite online backup with quick_check; prepare `/opt/oran-analiz-band-stage` with separate data directory `/var/lib/oran-analiz-band-stage` and loopback port3001. Run tests/build as application user and pace live provider checks sequentially.
-- [ ] Stop staging, pause audit timer during promotion, retain previous production directory and promote real staging checkout to `/opt/oran-analiz-pro`. Keep production `ORAN_DATA_DIR=/var/lib/oran-analiz`. Restart and verify health, exact legacy enrichment, current lookup, both sources, persistent cache. On failure restore previous code directory; no database restore unless independently necessary.
-- [ ] Fast-forward GitHub main to the verified release; confirm Netlify and GitHub Pages deploy the same source and VDS URL. Test public searches, row selection, clear, themes/responsive layouts and sample exports. Record actual evidence and leave local frontend configured for localhost.
+- [x] Commit on `codex/publish-match-bands`, push the branch only; retain main until backend verified.
+- [x] Take a private SQLite online backup with quick_check; prepare `/opt/oran-analiz-band-stage` with separate data directory `/var/lib/oran-analiz-band-stage` and loopback port3001. Run tests/build as application user and pace live provider checks sequentially.
+- [x] Stop staging, pause audit timer during promotion, retain previous production directory and promote real staging checkout to `/opt/oran-analiz-pro`. Keep production `ORAN_DATA_DIR=/var/lib/oran-analiz`. Restart and verify health, exact legacy enrichment, current lookup, both sources, persistent cache. On failure restore previous code directory; no database restore unless independently necessary.
+- [x] Fast-forward GitHub main to the verified release; confirm Netlify and GitHub Pages deploy the same source and VDS URL. Test public searches, row selection, clear, themes/responsive layouts and sample exports. Record actual evidence and leave local frontend configured for localhost.
 
 ## Progress
 
 - Preflight: GitHub/local/VDS base `0ddf011`; production active.159 saved archives, all missing MS snapshots. SQLite outside checkout; previous API/hosting configuration remains valid. SSH key available; password unnecessary.
 - Implementation verification:239 tests pass; lint has four existing warnings; frontend build and 12 viewport/theme browser cases pass. Independent review found retry persistence and parent-deadline fallback edges; failing regressions reproduced both, fixes retain in-memory retry suppression and reserve1s for cached fallback. Archive save must succeed before reporting it saved.
+- Release `3b235aa` deployed backend-first, then fast-forwarded to main. VDS239 tests/build pass; old Den Haag/PSV archives enriched for both providers, repeat/restart read durable snapshots. Production data directory unchanged, audit timer restored, previous code and two verified online backups retained.
+- Netlify deploy `6adbbbecba492e132419256d` and Pages workflow `40015338449` succeeded. Both sites serve `index-D5gkqYi7.js` and `index-CPkqiRO2.css`. See rollout verification document for actual browser/export coverage and limitations.
