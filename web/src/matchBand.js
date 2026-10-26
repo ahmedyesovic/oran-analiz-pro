@@ -87,7 +87,7 @@ function classifySet(raw) {
         return [label, outcome?.state === 'open' ? msOutcome(outcome.value)
             : { state: ['closed', 'missing', 'invalid'].includes(outcome?.state) ? outcome.state : 'missing', value: null }];
     }));
-    const fail = (status, line) => ({ status, band: null, codes: [], odds: set, lines: [line] });
+    const fail = (status, line) => ({ status, band: null, codes: [], sideBands: { MS1: null, MS2: null }, odds: set, lines: [line] });
     const one = set.MS1;
     const two = set.MS2;
     const open = outcome => outcome.state === 'open';
@@ -123,22 +123,32 @@ function classifySet(raw) {
     band ||= bandFor(set[favoriteLabel].value);
     const codes = favorite === 'tie' ? [`Evb${band.slice(1)}`, `Depb${band.slice(1)}`]
         : [`${favorite === 'MS1' ? 'Ev' : 'Dep'}b${band.slice(1)}`];
-    return { status: 'classified', band, codes, odds: set, lines: [
-        `${favorite === 'tie' ? 'MS1 = MS2 (favori yok): ' : ''}${band} aralığında ${codes.join(' / ')}`,
+    const sideBands = Object.fromEntries(['MS1', 'MS2'].map(label => {
+        const inferred = assumedClosed && label === favorite;
+        if (!open(set[label]) && !inferred) return [label, null];
+        const sideBand = inferred ? band : bandFor(set[label].value);
+        return [label, { band: sideBand, code: `${label === 'MS1' ? 'Ev' : 'Dep'}b${sideBand.slice(1)}`,
+            ...(inferred ? { inferred: true } : {}) }];
+    }));
+    const other = sideBands[favorite === 'MS1' ? 'MS2' : 'MS1'];
+    const otherLine = favorite !== 'tie' && other ? ` · ${other.band} aralığında ${other.code}` : '';
+    return { status: 'classified', band, codes, sideBands, odds: set, lines: [
+        `${favorite === 'tie' ? 'MS1 = MS2 (favori yok): ' : ''}${band} aralığında ${codes.join(' / ')}${otherLine}`,
         `${describe(set)}${assumedClosed ? ' · kapalı taraf ezici favori sayıldı' : ''}`
     ] };
 }
 
 export function classifyMatchBand(snapshot, verifiedProvider = true) {
     if (!verifiedProvider || snapshot?.version !== 1 || !Array.isArray(snapshot.sets)) {
-        return { status: 'unavailable', band: null, codes: [], odds: null,
+        return { status: 'unavailable', band: null, codes: [], sideBands: { MS1: null, MS2: null }, odds: null,
             lines: ['Sınıflandırılamadı: doğrulanmış, orijinal Maç Sonucu verisi yok. MS verisinin yeniden alınması gerekiyor.'] };
     }
     if (!snapshot.sets.length) return classifySet(null);
     const results = snapshot.sets.map(classifySet);
     const first = results[0];
-    if (results.some(result => result.status !== first.status || result.codes.join('/') !== first.codes.join('/'))) {
-        return { status: 'conflict', band: null, codes: [], odds: null,
+    if (results.some(result => result.status !== first.status || result.codes.join('/') !== first.codes.join('/')
+        || JSON.stringify(result.sideBands) !== JSON.stringify(first.sideBands))) {
+        return { status: 'conflict', band: null, codes: [], sideBands: { MS1: null, MS2: null }, odds: null,
             lines: ['Sınıflandırılamadı: Maç Sonucu setleri farklı sonuçlar veriyor.',
                 ...results.map((result, index) => `Set ${index + 1}: ${describe(result.odds)}`),
                 'Maç Sonucu setlerinden hangisinin geçerli olduğunu belirtin.'] };

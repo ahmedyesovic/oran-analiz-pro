@@ -74,6 +74,7 @@ try {
     assert.match(await page.$eval(classification, element => element.textContent), /Sınıflandırılamadı/);
     await search();
     await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('B1 aralığında Evb1'), {}, classification);
+    assert.match(await page.$eval(classification, e => e.textContent), /B7 aralığında Depb7/);
     const themes = ['default', 'black', 'white'];
     for (const width of [320, 390, 768, 1280]) {
         await page.setViewport({ width, height: 1000 });
@@ -86,6 +87,7 @@ try {
             assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), theme);
             assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}/${theme} overflow`);
             assert.equal(await page.$eval(classification, e => e.textContent.includes('B1 aralığında Evb1')), true);
+            assert.equal(await page.$eval(classification, e => e.textContent.includes('B7 aralığında Depb7')), true);
             assert.equal(await page.$eval(classification, e => e.getBoundingClientRect().right <= innerWidth), true);
             assert.equal(await page.$eval('.historical-matches-list', e => e.scrollTop), beforeTheme);
             await page.screenshot({ path: join(output, `${width}-${theme}.png`), fullPage: true });
@@ -96,6 +98,7 @@ try {
     const sourceBefore = await page.$eval('.historical-matches-source a', e => e.href);
     await page.locator('li:nth-child(2) .historical-match').click();
     await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('B2 aralığında Depb2'), {}, classification);
+    assert.match(await page.$eval(classification, e => e.textContent), /B7 aralığında Evb7/);
     assert.equal(h2hRequests, beforeH2h);
     assert.equal(await page.$eval('.historical-matches-list', e => e.scrollTop), beforeSelection);
     assert.equal(await page.$eval('.historical-matches-source a', e => e.href), sourceBefore);

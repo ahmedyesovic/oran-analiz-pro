@@ -31,15 +31,41 @@ test('classifies both sides at every band boundary without rounding', () => {
     for (const [price, band] of examples) {
         assert.deepEqual(classify(set(price, '2.50', '21.00'))?.codes, [`Evb${band.slice(1)}`], price);
         assert.deepEqual(classify(set('21.00', '2.50', price))?.codes, [`Depb${band.slice(1)}`], price);
+        assert.deepEqual(classify(set(price, '2.50', '21.00'))?.sideBands, {
+            MS1: { band, code: `Evb${band.slice(1)}` }, MS2: { band: 'B7', code: 'Depb7' }
+        }, price);
+        assert.deepEqual(classify(set('21.00', '2.50', price))?.sideBands, {
+            MS1: { band: 'B7', code: 'Evb7' }, MS2: { band, code: `Depb${band.slice(1)}` }
+        }, price);
     }
 });
 
 test('emits the requested two lines, uses labels and ignores the draw for favoritism', () => {
-    assert.deepEqual(classify(set())?.lines, ['B1 aralığında Evb1', 'MS1 1.25 · MSX 5.50 · MS2 9.00']);
+    assert.deepEqual(classify(set())?.lines, ['B1 aralığında Evb1 · B7 aralığında Depb7', 'MS1 1.25 · MSX 5.50 · MS2 9.00']);
     assert.deepEqual(classify({ MS2: open('2.45'), MSX: open('1.90'), MS1: open('2.45') })?.lines,
         ['MS1 = MS2 (favori yok): B4 aralığında Evb4 / Depb4', 'MS1 2.45 · MSX 1.90 · MS2 2.45']);
-    assert.deepEqual(classify(set('1,25', missing))?.lines, ['B1 aralığında Evb1', 'MS1 1.25 · MSX yok · MS2 9.00']);
+    assert.deepEqual(classify(set('1,25', missing))?.lines, ['B1 aralığında Evb1 · B7 aralığında Depb7', 'MS1 1.25 · MSX yok · MS2 9.00']);
     assert.match(classify(set('1.25', closed))?.lines[1] || '', /MSX kapalı/);
+});
+
+test('shows each side in its own band while preserving the favorite classification', () => {
+    const home = classify(set('1.90', '2.90', '4.50'));
+    assert.equal(home.band, 'B3');
+    assert.deepEqual(home.codes, ['Evb3']);
+    assert.deepEqual(home.sideBands, {
+        MS1: { band: 'B3', code: 'Evb3' }, MS2: { band: 'B6', code: 'Depb6' }
+    });
+    assert.equal(home.lines[0], 'B3 aralığında Evb3 · B6 aralığında Depb6');
+    const away = classify(set('9.00', '1.10', '1.355'));
+    assert.equal(away.band, 'B2');
+    assert.deepEqual(away.codes, ['Depb2']);
+    assert.deepEqual(away.sideBands, {
+        MS1: { band: 'B7', code: 'Evb7' }, MS2: { band: 'B2', code: 'Depb2' }
+    });
+    assert.equal(away.lines[0], 'B2 aralığında Depb2 · B7 aralığında Evb7');
+    assert.deepEqual(classify(set('2.45', '1.90', '2.45')).sideBands, {
+        MS1: { band: 'B4', code: 'Evb4' }, MS2: { band: 'B4', code: 'Depb4' }
+    });
 });
 
 test('closed outcomes follow the exact 1.50 and 7.00 thresholds in either direction', () => {
@@ -49,7 +75,26 @@ test('closed outcomes follow the exact 1.50 and 7.00 thresholds in either direct
         assert.deepEqual(classify(set(one, '3.00', two))?.codes, codes);
     }
     assert.deepEqual(classify(set(closed, '9.00', '21.00'))?.lines,
-        ['B0 aralığında Evb0', 'MS1 kapalı · MSX 9.00 · MS2 21.00 · kapalı taraf ezici favori sayıldı']);
+        ['B0 aralığında Evb0 · B7 aralığında Depb7', 'MS1 kapalı · MSX 9.00 · MS2 21.00 · kapalı taraf ezici favori sayıldı']);
+});
+
+test('marks assumed closed favorites and never invents unavailable side bands', () => {
+    assert.deepEqual(classify(set(closed, '9.00', '21.00')).sideBands, {
+        MS1: { band: 'B0', code: 'Evb0', inferred: true }, MS2: { band: 'B7', code: 'Depb7' }
+    });
+    assert.deepEqual(classify(set('21.00', '9.00', closed)).sideBands, {
+        MS1: { band: 'B7', code: 'Evb7' }, MS2: { band: 'B0', code: 'Depb0', inferred: true }
+    });
+    assert.deepEqual(classify(set(closed, '3.00', '1.50')).sideBands, {
+        MS1: null, MS2: { band: 'B2', code: 'Depb2' }
+    });
+    assert.deepEqual(classify(set('1.50', '3.00', closed)).sideBands, {
+        MS1: { band: 'B2', code: 'Evb2' }, MS2: null
+    });
+    for (const sample of [set(missing), set('1.25x'), set('1.005'), set(closed, '3.00', '1.51'),
+        set('3.01', '3.10', '4.00')]) {
+        assert.deepEqual(classify(sample).sideBands, { MS1: null, MS2: null });
+    }
 });
 
 test('refuses inconsistent, out-of-band and malformed odds without guessing', () => {
@@ -65,7 +110,7 @@ test('refuses inconsistent, out-of-band and malformed odds without guessing', ()
 
 test('duplicate MS sets must agree and report the first source set, never average', () => {
     assert.deepEqual(classify(set('1.25'), set('1.30'))?.lines,
-        ['B1 aralığında Evb1', 'MS1 1.25 · MSX 5.50 · MS2 9.00']);
+        ['B1 aralığında Evb1 · B7 aralığında Depb7', 'MS1 1.25 · MSX 5.50 · MS2 9.00']);
     const conflict = classify(set('1.25'), set('1.36'));
     assert.equal(conflict?.status, 'conflict');
     assert.deepEqual(conflict?.codes, []);
@@ -73,10 +118,29 @@ test('duplicate MS sets must agree and report the first source set, never averag
     assert.deepEqual(classify(set(), set(missing))?.codes, []);
 });
 
+test('duplicate sets must also agree on the opponent band and its availability', () => {
+    for (const sets of [
+        [set('1.25', '3.00', '4.00'), set('1.25', '3.00', '4.01')],
+        [set('4.00', '3.00', '1.25'), set('4.01', '3.00', '1.25')],
+        [set('1.25', '3.00', closed), set('1.25', '3.00', '9.00')]
+    ]) {
+        const result = classify(...sets);
+        assert.equal(result.status, 'conflict');
+        assert.deepEqual(result.codes, []);
+        assert.deepEqual(result.sideBands, { MS1: null, MS2: null });
+    }
+    const consistent = classify(set('1.25', '3.00', '4.50'), set('1.30', '3.00', '6.50'));
+    assert.equal(consistent.status, 'classified');
+    assert.deepEqual(consistent.sideBands.MS2, { band: 'B6', code: 'Depb6' });
+    assert.equal(consistent.odds.MS2.value, '4.50');
+});
+
 test('legacy rounded markets and unverified providers cannot supply a classification', () => {
     const result = { match: { name: 'A - B' }, markets: { 'MAÇ SONUCU': { 'Maç Sonucu': { '1': '1.35', 'X': '5.50', '2': '9.00' } } } };
     assert.equal(normalizeResponse({ ...result, oddsProvider: 'nesine' }).bandClassification?.status, 'unavailable');
+    assert.deepEqual(normalizeResponse({ ...result, oddsProvider: 'nesine' }).bandClassification?.sideBands, { MS1: null, MS2: null });
     assert.deepEqual(normalizeResponse({ ...result, oddsProvider: 'other', matchResultOdds: { version: 1, sets: [set()] } }).bandClassification?.codes, []);
+    assert.deepEqual(normalizeResponse({ ...result, oddsProvider: 'other', matchResultOdds: { version: 1, sets: [set()] } }).bandClassification?.sideBands, { MS1: null, MS2: null });
     assert.deepEqual(classify()?.codes, []);
 });
 
