@@ -22,6 +22,18 @@ Deployment sequence:
    previous code if promotion checks fail.
 5. Verify both live frontend forms against the updated shared API. No frontend
    source changes or redeployment are required for identical static bundles.
-6. Publish source to GitHub only if authenticated write access is available.
-   The current GitHub connector is read-only and local Git has no authenticated
-   write credential; report this limitation without claiming a source push.
+6. Publish source to GitHub after verifying authenticated repository write
+   access. The initial connector was read-only; the user later completed an
+   independent GitHub CLI login, verified as `ahmedyesovic` before publication.
+
+## Outcome
+
+Release `ea4f371` is active on the VDS after online backup, 365 staging tests and
+a real 52-market historical probe. Both live forms subsequently returned 56
+current Nesine markets and 10 Sahadan rows. Existing static bundles are
+byte-identical to the production build and use the updated shared API. Source
+publication to GitHub completed for the exact `ea4f371` release after the user
+authorized the direct login. Pages workflow `41123880202` succeeded and uses
+the existing VDS API variable.
+See `docs/verification-2026-10-30-native-search-rollout.md` for actual evidence
+and limits.
