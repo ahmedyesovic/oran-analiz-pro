@@ -57,6 +57,25 @@ const cases = [
 ];
 
 for (const [name, match] of [['web', teamNamesMatch], ['extension', extensionTeamNamesMatch], ['Sahadan', sameTeam]]) {
+    test(`${name} accepts Manchester United provider abbreviations without merging other clubs or squads`, () => {
+        for (const alias of ['Man.United', 'Man. United', 'Man United', 'Man Utd', 'Manchester Utd']) {
+            assert.equal(match(alias, 'Manchester United'), true, alias);
+            assert.equal(match('Manchester United', alias), true, alias);
+            for (const other of ['Manchester City', 'Newcastle United', 'Leeds United', 'FC United of Manchester', 'United', 'Manchester', 'Utd',
+                'Manchester United (K)', 'Manchester United Res.', 'Manchester United U19', 'Manchester United II', 'Jong Manchester United']) {
+                assert.equal(match(alias, other), false, `${alias} / ${other}`);
+                assert.equal(match(other, alias), false, `${other} / ${alias}`);
+            }
+        }
+        assert.equal(match('Man Utd U19', 'Manchester United U19'), true);
+        assert.equal(match('Man. United (K)', 'Manchester United Women'), true);
+        assert.equal(match('Man. United II', 'Manchester United II'), true);
+        for (const original of ['ManchesterUnited', 'MU']) {
+            assert.equal(match(original, 'Manchester United'), true);
+            assert.equal(match('Manchester United', original), true);
+        }
+    });
+
     test(`${name} preserves prefix initials while protecting squad suffixes`, () => {
         for (const [left, right, expected] of [
             ['B. Dortmund', 'Borussia Dortmund', true],
@@ -85,6 +104,17 @@ test('Nesine lookup skips women and reserves before resolving a verified main-te
         { C: 3, TYPE: 1, HN: 'Man. City', AN: 'Ipswich Town' }
     ], { home: 'Manchester City', away: 'Ipswich Town' });
     assert.equal(result.event.C, 3);
+});
+
+test('the reported Chelsea Manchester United input resolves the current Nesine Man. Utd name', () => {
+    const result = new MatchFinder({ debug: false }).findMatch([
+        { C: 40, TYPE: 1, HN: 'Chelsea', AN: 'Man. Utd U19' },
+        { C: 41, TYPE: 1, HN: 'Chelsea (K)', AN: 'Man. Utd (K)' },
+        { C: 42, TYPE: 1, HN: 'Chelsea', AN: 'Man. City' },
+        { C: 43, TYPE: 1, HN: 'Chelsea', AN: 'Man. Utd' }
+    ], { home: 'Chelsea', away: 'Manchester United' });
+    assert.equal(result.found, true);
+    assert.equal(result.event.C, 43);
 });
 
 test('Den Haag-PSV resolves the main Nesine team rather than Jong PSV or FC Eindhoven', () => {

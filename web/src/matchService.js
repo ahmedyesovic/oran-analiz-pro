@@ -5,6 +5,7 @@ import { getReliabilityStore } from './reliabilityStore.js';
 import { getTeamDirectory, TeamDirectory } from './teamDirectory.js';
 import { ARCHIVE_VERSION, archiveKey, pairKey, archiveMetadata, verifiedArchive, saveVerified, providerTeamIds, jsonValue } from './verifiedCache.js';
 import { classifyMatchBand, validMsSnapshot } from './matchBand.js';
+import { isAmbiguousTeamName } from '../../utils/normalize.js';
 
 export function normalizeResponse(result) {
     const formattedMarkets = Object.values(result.markets || {}).flatMap(group => Object.entries(group)
@@ -41,10 +42,13 @@ export class MatchService {
         return promise;
     }
 
-    async resolveTeams(query) {
+    async resolveTeams(query, { allowMatchReference = false } = {}) {
         const resolved = { ...query, teamIdentities: {} };
         for (const side of ['home', 'away']) {
             const id = query[`${side}TeamId`];
+            if (!id && !allowMatchReference && isAmbiguousTeamName(query[side])) {
+                throw new SourceError(`“${query[side]}” birden fazla takımı ifade edebilir. Tam takım adını yazın veya listeden bir takım seçin.`, 400);
+            }
             const team = await this.directory.resolve({ id, name: query[side] });
             if (id && !team) throw new SourceError('Seçilen takım doğrulanamadı. Takımı listeden yeniden seçin.', 400);
             if (team) {
@@ -127,7 +131,11 @@ export class MatchService {
     }
 
     async lookupResolved(input, mode) {
-        const query = await this.resolveTeams(input);
+        // Selected archives and exact bulletin codes already identify one
+        // match. Their ordinary provider identity checks remain authoritative;
+        // free pair searches and H2H still require a specific team name.
+        const allowMatchReference = Boolean((input.matchId && input.date) || (input.code && !input.date && mode !== 'historical'));
+        const query = await this.resolveTeams(input, { allowMatchReference });
         const warnings = [];
         const errors = [];
         if (query.matchId && query.date) {

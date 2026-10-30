@@ -460,7 +460,8 @@ test('search fallback hosts obey the same persistent 429 cooldown without retry'
     t.mock.method(globalThis, 'fetch', async () => { fetches++; return new Response('unexpected'); });
     await assert.rejects(sourceText('https://html.duckduckgo.com/html/?q=other', { source: 'search' }), error => error.upstreamStatus === 429);
     assert.equal(fetches, 0);
-    assert.equal(await runSourceTask('https://duckduckgo.com/html/?q=independent', () => 'allowed', { source: 'search' }), 'allowed');
+    await assert.rejects(runSourceTask('https://duckduckgo.com/html/?q=alias', () => 'unexpected', { source: 'search' }), error => error.upstreamStatus === 429);
+    assert.equal(await runSourceTask('https://www.bing.com/search?q=independent', () => 'allowed', { source: 'search' }), 'allowed');
     await assert.rejects(runSourceTask('https://html.duckduckgo.com/html/', () => 'wrong source', { source: 'mackolik' }), error => error.status === 400);
 });
 

@@ -2,6 +2,68 @@
 
 Use Node.js 24 with the pinned `better-sqlite3` dependency. Keep durable app data outside the checkout: production `ORAN_DATA_DIR=/var/lib/oran-analiz` stores `data.sqlite`, its SQLite sidecars and the latest `reliability-audit.json`. Give this directory to `oran-analiz`, restrict access, and retain it across releases. The production service must explicitly set both `NODE_ENV=production` and `ORAN_DATA_DIR`; development/tests otherwise use the store's memory default. Moving hosts requires the SQLite backup and this environment setting, independently of the checkout path. Do not put the database or reports in Git or a public static directory.
 
+## Native Mackolik discovery
+
+The current bulletin, recent results and daily-feed order remain first. If those
+do not resolve a completed Mackolik match, the server queries Mackolik's own
+`/ajax/search` team autocomplete and native `/takim/.../ma%C3%A7lar/{teamId}`
+fixtures. Source-advertised season links permit one previous season without an
+explicit date, or at most two overlapping seasons with one. Known Mackolik IDs
+skip autocomplete; Sahadan IDs are never assumed equivalent.
+
+Season labels may include a short tournament location, such as `2008 Japan`.
+Their leading year determines overlap and ordering; the advertised label and
+URL remain intact during navigation and response verification. Team name
+aliases such as `Man. United` and `Man. Utd` use the shared web/extension matcher
+and retain all squad qualifiers.
+
+Unselected generic labels such as `United`, `City` and `Real` require a full
+name or explicit team selection before a pair/H2H query contacts providers.
+One locally cached generic record cannot silently select the intended club.
+Selected app IDs still require the existing ID/name/squad binding. A selected
+historical match ID/date, or an exact code in a mode that actually uses that
+code, retains its normal direct match verification. H2H never uses an odds code
+to bypass team identity validation.
+
+Only explicitly completed fixture rows are discovery candidates. The archive
+must independently match the fixture's stable ID, both team IDs, calendar date
+and completed score. Fixture values are never used as odds. The existing archive
+parser still admits only verified Nesine markets, retaining a verified match
+without odds when no Nesine archive is available.
+
+The native stage gets up to 30 seconds, using at most half of the remaining
+request budget. It is still attempted when earlier stages leave less than 30
+seconds; the other half remains available for web fallback. Missing or
+malformed native responses remain provider errors if no later path succeeds;
+Mackolik 429 stops further attempts. Explicit historical ID/date selections
+still open that archive directly.
+
+If native/daily/archive access and search engines both fail, the response keeps
+the Mackolik error's status and retry policy and includes the search failure as
+additional context. A search-only cooldown must not mask a Mackolik failure or
+impose its cooldown on a later native attempt.
+
+## Free web-search fallback
+
+Mackolik discovery retains DuckDuckGo and also uses Bing and Brave HTML search,
+without API keys or paid accounts. The engines are shuffled once per logical
+web lookup and tried sequentially. Current Nesine results, recent results,
+Mackolik daily feeds, native team fixtures and explicit historical selections
+keep their priority; they do not issue additional search-engine requests when sufficient.
+
+A search HTTP 202/403 or a recognized HTTP-200 challenge places that engine in
+a durable five-minute bot cooldown. HTTP 429 respects `Retry-After` and any
+longer existing cooldown. DuckDuckGo's two hostnames share cooldowns and request
+slots. Other engines remain available independently. The ordinary provider
+coordinator still enforces the total deadline and source concurrency limits.
+
+The browser fallback opens discovered Mackolik match URLs; it never restarts a
+DuckDuckGo search. A rate limit on the Mackolik archive itself stops further
+archive requests. Changing discovery engines cannot avoid that provider limit.
+All free engines can be blocked at once: inspect structured `source-request`
+host/status logs and distinguish this from valid empty results. No CAPTCHA
+solving or proxy service is configured.
+
 ## Online backup
 
 Use SQLite's online backup API. Copying only `data.sqlite` while WAL writes are active can lose committed data or produce an inconsistent copy. Run the following from the release checkout after creating a private backup directory writable by the application user. The command uses the installed dependency; no download or external service is needed.

@@ -45,6 +45,10 @@ const TEAM_ALIASES = new Map([
     ['sevillia', 'Sevilla'],
     ['manchester city', 'Manchester City'],
     ['man city', 'Manchester City'],
+    ['manchester united', 'Manchester United'],
+    ['man united', 'Manchester United'],
+    ['man utd', 'Manchester United'],
+    ['manchester utd', 'Manchester United'],
     ['athletic bilbao', 'Athletic Bilbao'],
     ['athletico bilbao', 'Athletic Bilbao'],
     ['bilbao', 'Athletic Bilbao'],
@@ -74,6 +78,11 @@ export function teamIdentity(value) {
         return '';
     });
     return { name, qualifiers: [...qualifiers].sort().join(' ') };
+}
+
+export function isAmbiguousTeamName(value) {
+    const tokens = meaningfulTeamTokens(teamIdentity(value).name);
+    return tokens.length === 1 && AMBIGUOUS_SINGLE_TOKENS.has(tokens[0]);
 }
 
 function knownTeam(value) {

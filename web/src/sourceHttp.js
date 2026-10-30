@@ -9,7 +9,12 @@ const deadlines = new AsyncLocalStorage();
 const allowedHosts = new Map([
     ['www.sahadan.com', 'sahadan'], ['www.mackolik.com', 'mackolik'],
     ['cdnbulten.nesine.com', 'nesine'], ['ls.nesine.com', 'nesine'],
-    ['html.duckduckgo.com', 'search'], ['duckduckgo.com', 'search']
+    ['html.duckduckgo.com', 'search'], ['duckduckgo.com', 'search'],
+    ['www.bing.com', 'search'], ['search.brave.com', 'search']
+]);
+const searchEngines = new Map([
+    ['html.duckduckgo.com', 'DuckDuckGo'], ['duckduckgo.com', 'DuckDuckGo'],
+    ['www.bing.com', 'Bing'], ['search.brave.com', 'Brave']
 ]);
 const hostConcurrency = 2;
 const queueLimit = 32;
@@ -108,9 +113,48 @@ function rateLimitError(address, source, until) {
         { upstreamStatus: 429, retryAfter });
 }
 
+function coordinationHost(address) {
+    return address.hostname === 'duckduckgo.com' ? 'html.duckduckgo.com' : address.hostname;
+}
+
+function cooldownUntil(address) {
+    const store = getReliabilityStore();
+    const host = coordinationHost(address);
+    // Both keys may already be present in durable data from older versions.
+    return Math.max(store.getCooldown(host) || 0,
+        host === 'html.duckduckgo.com' ? store.getCooldown('duckduckgo.com') || 0 : 0);
+}
+
+function searchBlockedError(address, until, status) {
+    const retryAfter = Math.max(1, Math.ceil((until - Date.now()) / 1000));
+    return new SourceError(`search: ${searchEngines.get(address.hostname)} bot kontrolü nedeniyle geçici olarak kullanılamıyor. ${retryAfter} saniye bekleyin.`, 503,
+        { upstreamStatus: status, retryAfter });
+}
+
+// Parsing can identify a challenge even when the HTTP response itself is 200.
+// Return the error so callers can throw it at the parsing boundary.
+export function markSearchBlocked(url, { status = 202 } = {}) {
+    const address = sourceAddress(url, 'search');
+    if (!Number.isInteger(status) || status < 100 || status > 599) throw new SourceError('Kaynak geçerli HTTP durumu döndürmedi.');
+    const store = getReliabilityStore();
+    const host = coordinationHost(address);
+    const until = Math.max(Date.now() + 300000, cooldownUntil(address));
+    store.setCooldown(host, until);
+    store.setRecord('search-bot-cooldown', host, { until, upstreamStatus: status });
+    return searchBlockedError(address, until, status);
+}
+
 function checkCooldown(address, source) {
-    const until = getReliabilityStore().getCooldown(address.hostname);
-    if (until > Date.now()) throw rateLimitError(address, source, until);
+    const until = cooldownUntil(address);
+    if (until <= Date.now()) return;
+    if (searchEngines.has(address.hostname)) {
+        const blocked = getReliabilityStore().getRecord('search-bot-cooldown', coordinationHost(address))?.value;
+        if (blocked && blocked.until >= until && Number.isInteger(blocked.upstreamStatus)
+            && blocked.upstreamStatus >= 100 && blocked.upstreamStatus <= 599) {
+            throw searchBlockedError(address, until, blocked.upstreamStatus);
+        }
+    }
+    throw rateLimitError(address, source, until);
 }
 
 function headerValue(headers, name) {
@@ -123,13 +167,14 @@ function headerValue(headers, name) {
 export function sourceResponseStatus(url, status, headers, { source } = {}) {
     const address = sourceAddress(url, source);
     if (!Number.isInteger(status) || status < 100 || status > 599) throw new SourceError('Kaynak geçerli HTTP durumu döndürmedi.');
+    if (searchEngines.has(address.hostname) && [202, 403].includes(status)) throw markSearchBlocked(address.href, { status });
     if (status === 429) {
         const header = String(headerValue(headers, 'retry-after') || '').trim();
         const delay = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
         const proposedUntil = Date.now() + delay;
         const until = Number.isSafeInteger(proposedUntil) && delay > 0 ? proposedUntil : Date.now() + 60000;
-        getReliabilityStore().setCooldown(address.hostname, until);
-        throw rateLimitError(address, source, getReliabilityStore().getCooldown(address.hostname) || until);
+        getReliabilityStore().setCooldown(coordinationHost(address), Math.max(until, cooldownUntil(address)));
+        throw rateLimitError(address, source, cooldownUntil(address) || until);
     }
     if (status < 200 || status >= 300) {
         throw new SourceError(`${source || address.hostname}: HTTP ${status}`, 502, { upstreamStatus: status });
@@ -138,10 +183,11 @@ export function sourceResponseStatus(url, status, headers, { source } = {}) {
 
 function acquireHost(address, context) {
     checkDeadline(context);
-    let state = hosts.get(address.hostname);
+    const host = coordinationHost(address);
+    let state = hosts.get(host);
     if (!state) {
         state = { active: 0, queue: [] };
-        hosts.set(address.hostname, state);
+        hosts.set(host, state);
     }
     function lease() {
         state.active++;
@@ -258,11 +304,12 @@ async function retryDelay(context) {
 
 // For non-fetch provider operations, e.g. Puppeteer navigation. Work owns closing
 // its browser/page on abort. Disable deduplicate for callbacks with distinct results.
-export async function runSourceTask(url, work, { source, timeout = 15000, deduplicate = true } = {}) {
+export async function runSourceTask(url, work, { source, timeout = 15000, deduplicate = true, maxAttempts = 2 } = {}) {
     const address = sourceAddress(url, source);
     if (!Number.isFinite(timeout) || timeout <= 0) throw timeoutError(source);
+    if (![1, 2].includes(maxAttempts)) throw new TypeError('maxAttempts must be 1 or 2.');
     const context = deadlines.getStore();
-    if (!context) return withSourceDeadline(() => runSourceTask(url, work, { source, timeout, deduplicate }));
+    if (!context) return withSourceDeadline(() => runSourceTask(url, work, { source, timeout, deduplicate, maxAttempts }));
     checkDeadline(context);
     const key = address.href;
     // Separate searches own separate cancellation budgets. Share pending work only
@@ -270,7 +317,7 @@ export async function runSourceTask(url, work, { source, timeout = 15000, dedupl
     const tasks = context.tasks;
     if (deduplicate && tasks.has(key)) return raceSignal(tasks.get(key), context.signal);
     const operation = (async () => {
-        for (let attempt = 1; attempt <= 2; attempt++) {
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
             checkDeadline(context);
             checkCooldown(address, source);
             const startedAt = Date.now();
@@ -282,7 +329,7 @@ export async function runSourceTask(url, work, { source, timeout = 15000, dedupl
                 const normalized = normalizedError(error, source || address.hostname);
                 logAttempt(address, source, attempt, startedAt, normalized);
                 const retryable = isConnectionError(error) || [502, 503, 504].includes(normalized?.upstreamStatus);
-                if (attempt === 2 || !retryable || context.signal.aborted) throw normalized;
+                if (attempt === maxAttempts || !retryable || context.signal.aborted) throw normalized;
                 await retryDelay(context);
             }
         }
