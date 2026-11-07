@@ -60,7 +60,7 @@ function App() {
 
             {matchData?.warnings?.map(warning => <p key={warning} role="status">{warning}</p>)}
             {matchData?.hasOdds && (
-              <MatchResult key={`${matchData.dataSource}-${matchData.matchCode}-${matchData.matchDate}`} data={matchData} />
+              <MatchResult key={`${matchData.dataSource}-${matchData.matchCode}-${matchData.matchDate}`} data={matchData} selection={selection} />
             )}
           </div>
 
