@@ -12,7 +12,7 @@ import { formatOddsForClipboard, copyToClipboard } from '../utils/helpers';
 import ArchiveNotice from './ArchiveNotice';
 import BandClassification from './BandClassification';
 
-export default function MatchResult({ data }) {
+export default function MatchResult({ data, selection }) {
   const { match, isHistorical, oddsProvider, dataSource } = data || {};
   // Use the same visible categories for the screen, clipboard and PNG exports.
   const markets = Object.fromEntries(Object.entries(data?.markets || {}).filter(([category]) =>
@@ -50,7 +50,8 @@ export default function MatchResult({ data }) {
     setCopyError(null);
     // Historical copy must not restore a hidden category through formattedMarkets.
     const text = formatOddsForClipboard(isHistorical === true ? { markets } : data);
-    const success = await copyToClipboard(text || 'Geçerli oran bulunamadı.');
+    const title = `${selection.home} - ${selection.away}`;
+    const success = await copyToClipboard(text ? `${title}\n\n${text}` : 'Geçerli oran bulunamadı.');
     if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);

@@ -20,10 +20,12 @@ const service = {
         const noOdds = query.home === 'NoOdds';
         const selected = Boolean(query.matchId);
         if (query.home === 'Late') await new Promise(resolve => setTimeout(resolve, 350));
-        return normalizeResponse({ match: { home: query.home, away: query.away, name: `${query.home} - ${query.away}`,
+        return normalizeResponse({ match: { home: selected ? query.home : 'Provider Home', away: selected ? query.away : 'Provider Away', name: `${query.home} - ${query.away}`,
             code: 123, id: query.matchId || 'current', date: query.date || '2026-10-23' },
-        dataSource: 'mackolik', isHistorical: true, oddsProvider: 'nesine',
-        markets: noOdds ? {} : { 'MAÇ SONUCU': { 'Maç Sonucu': { '1': selected ? '9.00' : '1.25', X: '5.50', '2': selected ? '1.355' : '9.00' } } },
+        dataSource: 'mackolik', isHistorical: selected, oddsProvider: 'nesine',
+        markets: noOdds ? {} : { 'MAÇ SONUCU': { 'Maç Sonucu': { '1': selected ? '9.00' : '1.25', X: '5.50', '2': selected ? '1.355' : '9.00' } },
+            'KORNER & KART': { 'Korner': { '1': '3.00' } } },
+        formattedMarkets: [{ category: 'KORNER & KART', odds: [{ name: 'Korner 1', value: '3.00' }] }],
         matchResultOdds: noOdds ? { version: 1, sets: [] } : selected ? odds('9.00', '1.355') : odds('1.25', '9.00') });
     }
 };
@@ -69,12 +71,25 @@ try {
         }
         assert.fail(`Button missing: ${text}`);
     }
+    await page.evaluate(() => { window.__copied = ''; Object.defineProperty(navigator, 'clipboard', { configurable: true,
+        value: { writeText: async text => { window.__copied = text; } } }); });
+    async function copyOdds() {
+        await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.includes('Tüm Oranları Kopyala')));
+        await page.evaluate(() => { window.__copied = ''; });
+        await clickButton('Tüm Oranları Kopyala');
+        await page.waitForFunction(() => window.__copied !== '');
+        return page.evaluate(() => window.__copied);
+    }
     await search('NoOdds');
     await page.waitForSelector(classification, { timeout: 1500 });
     assert.match(await page.$eval(classification, element => element.textContent), /Sınıflandırılamadı/);
+    assert.equal(await page.$('button:has(svg.lucide-copy)'), null);
     await search();
     await page.waitForFunction(selector => document.querySelector(selector)?.textContent.includes('B1 aralığında Evb1'), {}, classification);
     assert.match(await page.$eval(classification, e => e.textContent), /B7 aralığında Depb7/);
+    assert.match(await copyOdds(), /^Genoa - Como\n\nMaç Sonucu 1: 1\.25/m);
+    await page.locator('#home').fill('Unsaved');
+    assert.match(await copyOdds(), /^Genoa - Como\n\n/);
     const themes = ['default', 'black', 'white'];
     for (const width of [320, 390, 768, 1280]) {
         await page.setViewport({ width, height: 1000 });
@@ -103,10 +118,9 @@ try {
     assert.equal(await page.$eval('.historical-matches-list', e => e.scrollTop), beforeSelection);
     assert.equal(await page.$eval('.historical-matches-source a', e => e.href), sourceBefore);
     assert.ok(requests.at(-1).matchId);
-    await page.evaluate(() => { window.__copied = ''; Object.defineProperty(navigator, 'clipboard', { configurable: true,
-        value: { writeText: async text => { window.__copied = text; } } }); });
-    await clickButton('Tüm Oranları Kopyala');
-    assert.doesNotMatch(await page.evaluate(() => window.__copied), /Depb|Evb|aralığında/);
+    const selectedCopy = await copyOdds();
+    assert.match(selectedCopy, /^Como - Genoa\n\nMaç Sonucu 1: 9\.00/m);
+    assert.doesNotMatch(selectedCopy, /Depb|Evb|aralığında|Korner|KORNER/);
     await clickButton('Temizle');
     assert.equal(await page.$(classification), null);
     assert.equal(await page.$eval('#home', e => e === document.activeElement), true);
@@ -116,8 +130,9 @@ try {
     await clickButton('Temizle');
     await new Promise(resolve => setTimeout(resolve, 450));
     assert.equal(await page.$(classification), null);
-    await search();
+    await search('Roma', 'Genoa');
     assert.match(await page.$eval(classification, e => e.textContent), /B1 aralığında Evb1/);
+    assert.match(await copyOdds(), /^Roma - Genoa\n\nMaç Sonucu 1: 1\.25/m);
     await page.hover('.theme-trigger');
     assert.equal(await page.$eval('.theme-trigger', e => e.getAttribute('aria-expanded')), 'true');
     await page.keyboard.press('Escape');
