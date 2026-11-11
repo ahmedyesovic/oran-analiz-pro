@@ -17,7 +17,7 @@ const TEAM_NAME_NOISE_TOKENS = new Set([
 ]);
 
 const AMBIGUOUS_SINGLE_TOKENS = new Set([
-  'athletic', 'city', 'dynamo', 'olympic', 'olympique', 'real', 'sporting', 'united'
+  'athletic', 'atletico', 'city', 'dynamo', 'olympic', 'olympique', 'real', 'sporting', 'united'
 ]);
 
 export function normalizeTeamName(value) {
@@ -49,6 +49,10 @@ const TEAM_ALIASES = new Map([
     ['man united', 'Manchester United'],
     ['man utd', 'Manchester United'],
     ['manchester utd', 'Manchester United'],
+    ['atletico madrid', 'Atletico Madrid'],
+    ['atletico de madrid', 'Atletico Madrid'],
+    ['atl madrid', 'Atletico Madrid'],
+    ['at madrid', 'Atletico Madrid'],
     ['athletic bilbao', 'Athletic Bilbao'],
     ['athletico bilbao', 'Athletic Bilbao'],
     ['bilbao', 'Athletic Bilbao'],
