@@ -455,25 +455,37 @@ export class MackolikScraper {
             ? [canonicalMatchDate]
             : this.getRecentDateCandidates(7);
 
-        // Tarih Nesine'den çözülemese bile Mackolik günlük listelerini doğrudan
-        // tara. Üçlü gruplar gecikmeyi sınırlarken sağlayıcıya aşırı yük bindirmez.
-        for (let offset = 0; offset < dateCandidates.length; offset += 3) {
-            const dateBatch = dateCandidates.slice(offset, offset + 3);
-            const batchResults = await Promise.allSettled(
-                dateBatch.map(date => this.findMackolikMatchesByDate(homeTeam, awayTeam, date, teamIdentities))
-            );
-
-            for (let index = 0; index < batchResults.length; index++) {
-                if (batchResults[index].status === 'rejected') {
-                    discoveryErrors.push(batchResults[index].reason);
-                    continue;
+        // Keep at most two feed requests in flight. When the newest one finds
+        // candidates, its freed host slot is available to verify the archive.
+        for (let offset = 0; offset < dateCandidates.length; offset += 2) {
+            const dateBatch = dateCandidates.slice(offset, offset + 2);
+            const batchController = new AbortController();
+            // Start in parallel, but consider dates newest first. Every rejection
+            // is handled immediately, even when an earlier date wins the race.
+            const batchResults = dateBatch.map(date => sourceHttp.withSourceDeadline(
+                () => this.findMackolikMatchesByDate(homeTeam, awayTeam, date, teamIdentities),
+                { signal: batchController.signal }
+            ).then(value => ({ value }), error => ({ error })));
+            try {
+                for (let index = 0; index < batchResults.length; index++) {
+                    const outcome = await batchResults[index];
+                    if (outcome.error) {
+                        discoveryErrors.push(outcome.error);
+                        continue;
+                    }
+                    try {
+                        const dateResult = await this.tryHttpCandidates(
+                            outcome.value, homeTeam, awayTeam, dateBatch[index], triedUrls, teamIdentities
+                        );
+                        if (dateResult) return dateResult;
+                    } catch (error) { discoveryErrors.push(error); }
                 }
-                try {
-                    const dateResult = await this.tryHttpCandidates(
-                        batchResults[index].value, homeTeam, awayTeam, dateBatch[index], triedUrls, teamIdentities
-                    );
-                    if (dateResult) return dateResult;
-                } catch (error) { discoveryErrors.push(error); }
+            } finally {
+                // Do not leave older feed requests or queued work alive after a
+                // verified newer match is found or the enclosing lookup ends.
+                const reason = new Error('Verified daily match selected or batch completed.');
+                reason.name = 'SourceSupersededError';
+                batchController.abort(reason);
             }
             const limited = discoveryErrors.find(error => error.upstreamStatus === 429);
             if (limited) throw limited;

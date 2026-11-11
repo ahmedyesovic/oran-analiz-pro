@@ -1,11 +1,12 @@
 import { NesineService } from './nesineService.js';
 import { HistoricalOddsSourceResolver } from './HistoricalOddsSourceResolver.js';
-import { SourceError, withSourceDeadline, getSourceRemainingMs } from './sourceHttp.js';
+import { SourceError, withSourceDeadline, getSourceRemainingMs, getSourceDeadlineSignal } from './sourceHttp.js';
 import { getReliabilityStore } from './reliabilityStore.js';
 import { getTeamDirectory, TeamDirectory } from './teamDirectory.js';
 import { ARCHIVE_VERSION, archiveKey, pairKey, archiveMetadata, verifiedArchive, saveVerified, providerTeamIds, jsonValue } from './verifiedCache.js';
 import { classifyMatchBand, validMsSnapshot } from './matchBand.js';
-import { isAmbiguousTeamName } from '../../utils/normalize.js';
+import { isAmbiguousTeamName, teamIdentity, teamNamesMatch } from '../../utils/normalize.js';
+import { isPair, normalizeSahadanMatch } from './sahadanParser.js';
 
 export function normalizeResponse(result) {
     const formattedMarkets = Object.values(result.markets || {}).flatMap(group => Object.entries(group)
@@ -34,7 +35,7 @@ export class MatchService {
     }
 
     lookup(query, mode = 'auto') {
-        const key = JSON.stringify([mode, query.home, query.away, query.source, query.date, query.matchId, query.code, query.homeTeamId, query.awayTeamId]);
+        const key = JSON.stringify([mode, query.home, query.away, query.source, query.date, query.matchId, query.code, query.homeTeamId, query.awayTeamId, query.trustedTeamIdentities, query.trustedSourceMatchId, query.trustedSourceMatchDate]);
         if (this.pending.has(key)) return this.pending.get(key);
         const promise = withSourceDeadline(() => this.lookupResolved(query, mode));
         this.pending.set(key, promise);
@@ -44,6 +45,41 @@ export class MatchService {
 
     async resolveTeams(query, { allowMatchReference = false } = {}) {
         const resolved = { ...query, teamIdentities: {} };
+        const hasTrustedMatchId = query.trustedSourceMatchId !== undefined && query.trustedSourceMatchId !== null;
+        const hasTrustedMatchDate = query.trustedSourceMatchDate !== undefined && query.trustedSourceMatchDate !== null;
+        if (hasTrustedMatchId || hasTrustedMatchDate) {
+            const value = query.trustedSourceMatchDate;
+            if (!query.trustedTeamIdentities || !hasTrustedMatchId || !hasTrustedMatchDate
+                || typeof query.trustedSourceMatchId !== 'string'
+                || !/^[a-z0-9]{1,64}$/.test(query.trustedSourceMatchId)
+                || typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)
+                || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value) {
+                throw new SourceError('Otomatik maç kimliği ve tarihi doğrulanamadı.', 400);
+            }
+        }
+        if (query.trustedTeamIdentities !== undefined) {
+            const identities = query.trustedTeamIdentities;
+            const ids = [];
+            if (query.homeTeamId || query.awayTeamId || query.matchId || query.date || query.code) {
+                throw new SourceError('Seçilen takım kimliği ile otomatik kadro kimliği birleştirilemez.', 400);
+            }
+            for (const side of ['home', 'away']) {
+                const team = identities?.[side];
+                const providers = team?.providers;
+                if (!teamIdentity(query[side]).name || teamIdentity(query[side]).qualifiers !== 'women'
+                    || !Array.isArray(providers) || providers.length !== 1
+                    || providers[0]?.source !== 'sahadan'
+                    || typeof providers[0]?.providerId !== 'string'
+                    || !/^[a-z0-9]{1,64}$/.test(providers[0].providerId)) {
+                    throw new SourceError('Otomatik takım veya kadro kimliği doğrulanamadı.', 400);
+                }
+                const id = providers[0].providerId;
+                ids.push(id);
+                resolved.teamIdentities[side] = { providers: [{ source: 'sahadan', providerId: id }] };
+            }
+            if (ids[0] === ids[1]) throw new SourceError('Otomatik takım kimlikleri farklı olmalıdır.', 400);
+            return resolved;
+        }
         for (const side of ['home', 'away']) {
             const id = query[`${side}TeamId`];
             if (!id && !allowMatchReference && isAmbiguousTeamName(query[side])) {
@@ -116,6 +152,9 @@ export class MatchService {
     }
 
     async bindDiscoveredTeams(query, result) {
+        // Do not replace Sahadan-verified IDs with a same-name record from
+        // another provider. The match detail below independently proves them.
+        if (query.trustedTeamIdentities) return query;
         const teamIdentities = { ...query.teamIdentities };
         const existingIds = providerTeamIds(teamIdentities, query.source);
         for (const side of ['home', 'away']) {
@@ -128,6 +167,41 @@ export class MatchService {
             if (verified) teamIdentities[side] = verified;
         }
         return { ...query, teamIdentities };
+    }
+
+    async verifyTrustedCurrent(query, result) {
+        const fail = () => { throw new SourceError('Güncel maçın takım ve olay kimliği doğrulanamadı.'); };
+        const match = result?.match;
+        const ids = providerTeamIds(query.teamIdentities, 'sahadan');
+        const id = query.trustedSourceMatchId;
+        const sourceDate = query.trustedSourceMatchDate;
+        if (!ids.home || !ids.away || !id || !sourceDate || typeof this.historical.sahadan?.detail !== 'function'
+            || !match || !teamNamesMatch(match.home, query.home) || !teamNamesMatch(match.away, query.away)) return fail();
+        const code = String(match.code ?? '');
+        if (!/^\d+$/.test(code) || match.date !== sourceDate) return fail();
+        const detail = await this.historical.sahadan.detail(id);
+        const actual = detail?.match;
+        if (!actual || actual.uuid !== id || !['Fixture', 'Playing'].includes(actual.status)
+            || !isPair(actual, query.home, query.away, false, ids)) return fail();
+        const normalized = normalizeSahadanMatch(actual);
+        const sourceCode = String(normalized.code ?? '');
+        if (normalized.date !== sourceDate || !/^\d+$/.test(sourceCode) || sourceCode !== code) return fail();
+    }
+
+    async verifyTrustedResult(query, result) {
+        if (!query.trustedTeamIdentities) return;
+        const ids = providerTeamIds(query.teamIdentities, 'sahadan');
+        if (!ids.home || !ids.away || typeof this.historical.sahadan?.detail !== 'function') {
+            throw new SourceError('Otomatik maç kimliği Sahadan ile doğrulanamadı.');
+        }
+        const detail = await this.historical.sahadan.detail(result.match.id);
+        const actual = detail?.match;
+        const normalized = actual && normalizeSahadanMatch(actual);
+        if (!actual || actual.uuid !== result.match.id || actual.status !== 'Played'
+            || !isPair(actual, query.home, query.away, false, ids)
+            || normalized.date !== result.match.date || normalized.score !== result.match.score) {
+            throw new SourceError('Otomatik maçın takım, tarih ve sonucu doğrulanamadı.');
+        }
     }
 
     async lookupResolved(input, mode) {
@@ -143,23 +217,32 @@ export class MatchService {
             if (cached) return this.enrichCachedArchive(query, cached);
         }
         if (!query.date && mode !== 'historical') {
+            let current = null;
             try {
-                const current = await this.nesine.current(query);
-                if (current) return normalizeResponse(current);
+                current = await this.nesine.current(query);
             } catch (error) {
                 if (mode === 'current' || query.code) throw error;
                 errors.push(error);
                 warnings.push(`Güncel Nesine kontrolü başarısız: ${error.message}`);
+            }
+            if (current) {
+                // Bulletin names alone cannot distinguish same-named squads;
+                // bind the event to the verified Sahadan UUIDs and Iddaa code.
+                if (query.trustedTeamIdentities) await this.verifyTrustedCurrent(query, current);
+                return normalizeResponse(current);
             }
             if (mode === 'current' || query.code) throw new SourceError('Güncel maç bulunamadı.', 404);
         }
         let recent = null;
         if (!query.date) {
             try { recent = await this.nesine.recent(query.home, query.away); }
-            catch (error) { errors.push(error); }
+            catch (error) {
+                errors.push(error);
+                warnings.push('Son tamamlanan maç doğrulanamadı; gösterilen geçmiş maç en yeni karşılaşma olmayabilir.');
+            }
         }
         const date = query.date || recent?.date;
-        const pair = this.store.getRecord('archive-pairs', pairKey(query), { version: ARCHIVE_VERSION, maxAgeMs: 3600000 });
+        const pair = !query.trustedTeamIdentities && this.store.getRecord('archive-pairs', pairKey(query), { version: ARCHIVE_VERSION, maxAgeMs: 3600000 });
         if (!query.matchId && pair && (!date || pair.value.date === date)) {
             const cached = this.cachedArchive({ ...query, date: date || pair.value.date }, pair.value.key);
             if (cached) {
@@ -167,16 +250,75 @@ export class MatchService {
                 return { ...response, warnings: [...warnings, ...(response.warnings || [])] };
             }
         }
-        const result = await this.historical.resolveHistoricalOdds({ ...query, date });
+        // Only an unpinned pair can use an alternate archive. Explicit historical
+        // selections must keep their original source, date, and stable match ID.
+        const mayUseAlternate = !query.date && !query.matchId && !query.code;
+        const remaining = getSourceRemainingMs();
+        const primaryBudget = mayUseAlternate && remaining > 3000
+            ? Math.min(25000, Math.max(1000, remaining - 20000)) : remaining;
+        let effectiveQuery = { ...query, date };
+        let result;
+        let trustedResultVerified = false;
+        let primarySignal;
+        try {
+            result = await withSourceDeadline(() => {
+                primarySignal = getSourceDeadlineSignal();
+                return this.historical.resolveHistoricalOdds(effectiveQuery);
+            }, { timeoutMs: primaryBudget });
+        } catch (primaryError) {
+            // Malformed payloads, identity errors and provider 404 are not
+            // transport failures and cannot be silently hidden by fallback.
+            const upstream = primaryError?.upstreamStatus;
+            const transportFailure = primaryError instanceof SourceError && (
+                primaryError.status === 504 || upstream === 429
+                || (upstream >= 500 && upstream <= 599)
+                || (primaryError.status === 502 && /kaynağa bağlantı kurulamadı/i.test(primaryError.message))
+            );
+            const alternateBudget = Math.min(20000, getSourceRemainingMs() - 1000);
+            if (!mayUseAlternate || !transportFailure || alternateBudget <= 0) throw primaryError;
+            const alternate = query.source === 'mackolik' ? 'sahadan' : 'mackolik';
+            const alternateQuery = { ...query, source: alternate, date };
+            try {
+                const candidate = await withSourceDeadline(
+                    () => this.historical.resolveHistoricalOdds(alternateQuery), { timeoutMs: alternateBudget });
+                const verified = candidate && await this.bindDiscoveredTeams(alternateQuery, candidate);
+                // Only nonempty, independently verified Nesine odds may replace
+                // a transport failure; an empty archive cannot hide it.
+                if (!candidate || !verifiedArchive(candidate, verified) || !normalizeResponse(candidate).hasOdds) throw primaryError;
+                await this.verifyTrustedResult(verified, candidate);
+                trustedResultVerified = true;
+                result = candidate;
+                effectiveQuery = alternateQuery;
+                warnings.push(`${query.source} kaynağına ulaşılamadı; doğrulanmış ${alternate} arşivi gösteriliyor.`);
+            } catch {
+                // If our own budget stopped the primary (not an upstream 429),
+                // allow a bounded retry when the alternate cannot help. Keep at
+                // least 30 seconds for a higher-level unqualified-pair resolver.
+                const retryBudget = Math.min(20000, getSourceRemainingMs() - 30000);
+                const stoppedByBudget = primaryError.status === 504 && !primaryError.upstreamStatus
+                    && !primaryError.retryAfter && primarySignal?.aborted && primarySignal.reason === primaryError;
+                if (!stoppedByBudget || retryBudget < 5000) throw primaryError;
+                try {
+                    const retry = await withSourceDeadline(
+                        () => this.historical.resolveHistoricalOdds(effectiveQuery), { timeoutMs: retryBudget });
+                    const verified = retry && await this.bindDiscoveredTeams(effectiveQuery, retry);
+                    if (!retry || !verifiedArchive(retry, verified)) throw primaryError;
+                    result = retry;
+                } catch {
+                    throw primaryError;
+                }
+            }
+        }
         if (!result) {
             if (errors.length) throw errors.find(error => error.retryAfter) || errors[0];
             throw new SourceError(`${query.source}: aranan kapsamda tamamlanmış maç bulunamadı.`, 404);
         }
-        const verifiedQuery = await this.bindDiscoveredTeams({ ...query, date }, result);
+        const verifiedQuery = await this.bindDiscoveredTeams(effectiveQuery, result);
         if (!verifiedArchive(result, verifiedQuery)) throw new SourceError('Geçmiş maç sonucu ve Nesine oran kaynağı doğrulanamadı.');
-        const key = archiveKey(query.source, result.match.id, result.match.date);
+        if (!trustedResultVerified) await this.verifyTrustedResult(verifiedQuery, result);
+        const key = archiveKey(effectiveQuery.source, result.match.id, result.match.date);
         saveVerified(this.store, 'verified-archives', key, result, { version: ARCHIVE_VERSION });
-        if (!query.date && !query.matchId) saveVerified(this.store, 'archive-pairs', pairKey(query), { key, date: result.match.date }, { version: ARCHIVE_VERSION });
+        if (!query.date && !query.matchId && !query.trustedTeamIdentities) saveVerified(this.store, 'archive-pairs', pairKey(effectiveQuery), { key, date: result.match.date }, { version: ARCHIVE_VERSION });
         return normalizeResponse({ ...result, isHistorical: true, warnings });
     }
 }

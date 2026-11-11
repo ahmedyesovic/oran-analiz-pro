@@ -1,4 +1,4 @@
-import { SourceError, sourceJson, invalidateSourceCache } from './sourceHttp.js';
+import { SourceError, sourceJson, invalidateSourceCache, withSourceDeadline } from './sourceHttp.js';
 import { MatchFinder } from './matchFinder.js';
 import { MarketParser } from './marketParser.js';
 import { MackolikScraper } from './MackolikScraper.js';
@@ -34,7 +34,8 @@ export class NesineService {
         const dates = new MackolikScraper({ debug: false }).getRecentDateCandidates(7);
         const finder = new MatchFinder({ debug: false });
         for (let offset = 0; offset < dates.length; offset += 3) {
-            const batch = await Promise.all(dates.slice(offset, offset + 3).map(async date => {
+            const controller = new AbortController();
+            const batch = dates.slice(offset, offset + 3).map(date => withSourceDeadline(async () => {
                 try {
                     const payload = await sourceJson(`https://ls.nesine.com/api/v2/LiveScore/GetUnliveMatches?sportType=1&date=${date}`, { source: 'nesine', ttl: 300000, timeout: 8000 });
                     if (!Array.isArray(payload?.d)) {
@@ -43,15 +44,28 @@ export class NesineService {
                     }
                     const events = payload.d.map(m => ({ C: m.C, HN: m.HT, AN: m.AT, homeAliases: [m.HT, m.HTTR].filter(Boolean), awayAliases: [m.AT, m.ATTR].filter(Boolean), TYPE: 1, D: date }));
                     const found = finder.findMatch(events, { home, away });
-                    return found.found && !found.isReversed ? { ...found.event, date } : null;
+                    return { match: found.found && !found.isReversed ? { ...found.event, date } : null };
                 } catch (error) {
-                    errors.push(error);
-                    console.warn(`[NesineRecent ${date}] ${error.message}`);
-                    return null;
+                    if (!controller.signal.aborted) console.warn(`[NesineRecent ${date}] ${error.message}`);
+                    return { error };
                 }
-            }));
-            const found = batch.find(Boolean);
-            if (found) return found;
+            }, { signal: controller.signal }).catch(error => ({ error })));
+            try {
+                // Evaluate in date order without waiting for unrelated older days.
+                for (const pending of batch) {
+                    const outcome = await pending;
+                    if (outcome.error) errors.push(outcome.error);
+                    if (outcome.match) {
+                        if (errors.length) throw errors[0];
+                        return outcome.match;
+                    }
+                }
+            } finally {
+                // Stop obsolete queued and in-flight work after a result is known.
+                const reason = new Error('Sonuç belirlendi; eski günlerin sorgusu iptal edildi.');
+                reason.name = 'SourceSupersededError';
+                controller.abort(reason);
+            }
         }
         if (errors.length) throw errors[0];
         return null;

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { getReliabilityStore } from './reliabilityStore.js';
 
 // Transport cache is deliberately process-local; only cooldowns are durable here.
@@ -6,6 +7,16 @@ const cache = new Map();
 const traces = new Map();
 const hosts = new Map();
 const deadlines = new AsyncLocalStorage();
+const requestTraces = new AsyncLocalStorage();
+
+// Internal correlation only; never accept an identifier or query from the client.
+export function withRequestTrace(work) {
+    return requestTraces.run(randomUUID(), work);
+}
+
+export function requestTraceId() {
+    return requestTraces.getStore();
+}
 const allowedHosts = new Map([
     ['www.sahadan.com', 'sahadan'], ['www.mackolik.com', 'mackolik'],
     ['cdnbulten.nesine.com', 'nesine'], ['ls.nesine.com', 'nesine'],
@@ -80,15 +91,18 @@ export function assertSourceDeadline() {
 }
 
 // Nested scopes may shorten, but never extend, a search's total budget.
-export async function withSourceDeadline(work, { timeoutMs = 120000 } = {}) {
+export async function withSourceDeadline(work, { timeoutMs = 120000, signal } = {}) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw timeoutError();
     const parent = deadlines.getStore();
     if (parent) checkDeadline(parent);
     const expires = Math.min(Date.now() + timeoutMs, parent?.expires ?? Infinity);
     const controller = new AbortController();
     const abort = () => controller.abort(parent.signal.reason);
+    const abortExternal = () => controller.abort(signal.reason);
     if (parent?.signal.aborted) controller.abort(parent.signal.reason);
     else parent?.signal.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abortExternal();
+    else signal?.addEventListener('abort', abortExternal, { once: true });
     const timer = setTimeout(() => controller.abort(timeoutError()), Math.max(0, expires - Date.now()));
     try {
         const context = { expires, signal: controller.signal, pending: new Map(), tasks: new Map() };
@@ -99,6 +113,7 @@ export async function withSourceDeadline(work, { timeoutMs = 120000 } = {}) {
     } finally {
         clearTimeout(timer);
         parent?.signal.removeEventListener('abort', abort);
+        signal?.removeEventListener('abort', abortExternal);
     }
 }
 
@@ -109,7 +124,9 @@ function checkDeadline(context) {
 
 function rateLimitError(address, source, until) {
     const retryAfter = Math.max(1, Math.ceil((until - Date.now()) / 1000));
-    return new SourceError(`${source || address.hostname}: HTTP 429 — kaynak istekleri sınırlandırdı. ${retryAfter} saniye bekleyin.`, 503,
+    const provider = searchEngines.get(address.hostname);
+    const label = provider ? `${source || 'search'} (${provider})` : source || address.hostname;
+    return new SourceError(`${label}: HTTP 429 — kaynak istekleri sınırlandırdı. ${retryAfter} saniye bekleyin.`, 503,
         { upstreamStatus: 429, retryAfter });
 }
 
@@ -260,18 +277,24 @@ function fetchError(error, source) {
     return normalizedError(error, source);
 }
 
-function logAttempt(address, source, attempt, startedAt, error) {
+function logAttempt(address, source, attempt, startedAt, queueMs, error) {
     if (process.env.NODE_ENV !== 'production') return;
+    const cancelled = error?.name === 'SourceSupersededError';
     console.info(JSON.stringify({
         event: 'source-request', host: address.hostname, source: source || allowedHosts.get(address.hostname), attempt,
         elapsedMs: Math.max(0, Math.min(120000, Date.now() - startedAt)),
-        status: error?.upstreamStatus ?? error?.status ?? 200,
-        outcome: error ? 'error' : 'ok'
+        queueMs: Math.max(0, Math.min(120000, queueMs)),
+        ...(requestTraceId() ? { requestId: requestTraceId() } : {}),
+        ...(error?.upstreamStatus ? { upstreamStatus: error.upstreamStatus } : {}),
+        status: cancelled ? 499 : error?.upstreamStatus ?? error?.status ?? 200,
+        outcome: cancelled ? 'cancelled' : error ? 'error' : 'ok'
     }));
 }
 
-async function sourceAttempt(address, work, { source, timeout, attempt }, context) {
-    const release = await acquireHost(address, context);
+async function sourceAttempt(address, work, { source, timeout, attempt }, context, timing) {
+    let release;
+    try { release = await acquireHost(address, context); }
+    finally { timing.queueMs = Math.max(0, Date.now() - timing.startedAt); }
     try {
         checkDeadline(context);
         checkCooldown(address, source);
@@ -321,13 +344,14 @@ export async function runSourceTask(url, work, { source, timeout = 15000, dedupl
             checkDeadline(context);
             checkCooldown(address, source);
             const startedAt = Date.now();
+            const timing = { startedAt, queueMs: 0 };
             try {
-                const value = await sourceAttempt(address, work, { source, timeout, attempt }, context);
-                logAttempt(address, source, attempt, startedAt);
+                const value = await sourceAttempt(address, work, { source, timeout, attempt }, context, timing);
+                logAttempt(address, source, attempt, startedAt, timing.queueMs);
                 return value;
             } catch (error) {
                 const normalized = normalizedError(error, source || address.hostname);
-                logAttempt(address, source, attempt, startedAt, normalized);
+                logAttempt(address, source, attempt, startedAt, timing.queueMs, normalized);
                 const retryable = isConnectionError(error) || [502, 503, 504].includes(normalized?.upstreamStatus);
                 if (attempt === maxAttempts || !retryable || context.signal.aborted) throw normalized;
                 await retryDelay(context);
