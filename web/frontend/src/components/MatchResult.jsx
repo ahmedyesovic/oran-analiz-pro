@@ -12,7 +12,7 @@ import { formatOddsForClipboard, copyToClipboard } from '../utils/helpers';
 import ArchiveNotice from './ArchiveNotice';
 import BandClassification from './BandClassification';
 
-export default function MatchResult({ data, selection }) {
+export default function MatchResult({ data, selection, observationEnded = false }) {
   const { match, isHistorical, oddsProvider, dataSource } = data || {};
   // Use the same visible categories for the screen, clipboard and PNG exports.
   const markets = Object.fromEntries(Object.entries(data?.markets || {}).filter(([category]) =>
@@ -117,7 +117,8 @@ export default function MatchResult({ data, selection }) {
 
   return (
     <section className="glass-panel animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '1.75rem' }}>
-      {isHistorical === true && <ArchiveNotice archiveCache={data.archiveCache} />}
+      {isHistorical === true && <ArchiveNotice archiveCache={data.archiveCache} latestVerified={data.latestVerified}
+        refresh={data.refresh} observationEnded={observationEnded} />}
       {copyError && <p role="alert" style={{ color: 'var(--error)' }}>{copyError}</p>}
       
       {/* Üst Bilgi Kartı */}

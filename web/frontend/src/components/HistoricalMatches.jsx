@@ -6,7 +6,7 @@ function scoreParts(score) {
   return score?.match(/^(\d+)\s*-\s*(\d+)$/)?.slice(1) || ['—', '—'];
 }
 
-export default function HistoricalMatches({ data, loading, error, onSelectMatch, selectedMatchId }) {
+export default function HistoricalMatches({ data, loading, error, message, onSelectMatch, selectedMatchId }) {
   const matches = data?.matches || [];
   return (
     <section className="glass-panel animate-fade-in historical-matches" aria-label="Aralarındaki Maçlar">
@@ -21,8 +21,9 @@ export default function HistoricalMatches({ data, loading, error, onSelectMatch,
           <ExternalLink size={14} aria-hidden="true" />
         </a> : 'Kaynak: Sahadan'}
       </p>
-      <ArchiveNotice archiveCache={data?.archiveCache} />
-      {loading && <p className="historical-matches-message" role="status">Aralarındaki maçlar yükleniyor…</p>}
+      <ArchiveNotice archiveCache={data?.archiveCache} latestVerified={data?.latestVerified}
+        refresh={data?.refresh} observationEnded={!!error} />
+      {(loading || message) && <p className="historical-matches-message" role="status">{message || 'Aralarındaki maçlar yükleniyor…'}</p>}
       {error && <p className="historical-matches-message historical-matches-error" role="alert">{error}</p>}
       {!loading && !error && !matches.length && <p className="historical-matches-message">Sahadan tablosunda karşılaşma bulunmuyor.</p>}
       {!!matches.length && <p className="historical-matches-hint">Oranları görmek için bir maç seçin.</p>}
