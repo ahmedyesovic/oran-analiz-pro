@@ -10,8 +10,8 @@ import { createMatchRequests } from './utils/matchRequests';
 const API_BASE_URL = import.meta.env.DEV ? '' : (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 function App() {
-  const [{ data: matchData, loading, error }, setMatchState] = useState({ data: null, loading: false, error: null });
-  const [{ data: h2h, loading: h2hLoading, error: h2hError }, setHistoryState] = useState({ data: null, loading: false, error: null });
+  const [{ data: matchData, loading, error, message }, setMatchState] = useState({ data: null, loading: false, error: null });
+  const [{ data: h2h, loading: h2hLoading, error: h2hError, message: h2hMessage }, setHistoryState] = useState({ data: null, loading: false, error: null });
   const [selection, setSelection] = useState(null);
   const [requests] = useState(() => createMatchRequests({
     apiBaseUrl: API_BASE_URL, onMatch: setMatchState, onHistory: setHistoryState, onSelection: setSelection
@@ -47,26 +47,29 @@ function App() {
             <MatchSearch onSearch={(home, away, options) => requests.searchPair(home, away, options)}
               onClear={() => requests.clear()} loading={loading} selection={selection} apiBaseUrl={API_BASE_URL} />
 
+            {message && <p role="status">{message}</p>}
+
             {error && (
               <div className="animate-fade-in" style={{ background: 'var(--error-bg)', border: '1px solid var(--error)', color: 'var(--error-text)', padding: '1rem 1.25rem', borderRadius: '0.75rem', textAlign: 'center', fontWeight: 500 }}>
                 {error}
               </div>
             )}
 
-            {matchData?.isHistorical === true && !matchData.hasOdds && <ArchiveNotice archiveCache={matchData.archiveCache} />}
+            {matchData?.isHistorical === true && !matchData.hasOdds && <ArchiveNotice archiveCache={matchData.archiveCache}
+              latestVerified={matchData.latestVerified} refresh={matchData.refresh} observationEnded={!!error} />}
             {matchData && !matchData.hasOdds && (
               <HistoricalFallback message={matchData.historicalMessage} classification={matchData.bandClassification} />
             )}
 
             {matchData?.warnings?.map(warning => <p key={warning} role="status">{warning}</p>)}
             {matchData?.hasOdds && (
-              <MatchResult key={`${matchData.dataSource}-${matchData.matchCode}-${matchData.matchDate}`} data={matchData} selection={selection} />
+              <MatchResult key={`${matchData.dataSource}-${matchData.matchCode}-${matchData.matchDate}`} data={matchData} selection={selection} observationEnded={!!error} />
             )}
           </div>
 
           {selection && (
             <aside className="match-sidebar" aria-label="Geçmiş karşılaşmalar">
-              <HistoricalMatches data={h2h} loading={h2hLoading} error={h2hError} selectedMatchId={selection.matchId}
+              <HistoricalMatches data={h2h} loading={h2hLoading} error={h2hError} message={h2hMessage} selectedMatchId={selection.matchId}
                 onSelectMatch={match => requests.selectMatch(match, selection.source)} />
             </aside>
           )}
