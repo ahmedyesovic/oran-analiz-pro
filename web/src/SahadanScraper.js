@@ -110,9 +110,21 @@ export class SahadanScraper {
         return { match, ...parsed, dataSource: 'sahadan', oddsProvider: parsed.providerEvidence.length ? 'nesine' : null };
     }
 
-    headToHead(home, away, { teamIdentities } = {}) {
+    cachedHeadToHead(home, away, { teamIdentities } = {}) {
+        for (const key of new Set([pairKey({ home, away, teamIdentities }), pairKey({ home, away })])) {
+            const record = this.store?.getRecord('verified-h2h', key, { version: 1 });
+            const age = record ? this.clock() - record.savedAt : -1;
+            if (age < 0 || age > 86400000 || !verifiedHistory(record.value, home, away, { teamIdentities })) continue;
+            return { ...record.value, archiveCache: archiveMetadata(record, age > 900000),
+                latestVerified: age <= 900000, lastLatestCheckedAt: new Date(record.savedAt).toISOString() };
+        }
+        return null;
+    }
+
+    headToHead(home, away, { teamIdentities, refresh = false } = {}) {
         const key = pairKey({ home, away, teamIdentities });
-        if (this.historyPending.has(key)) return this.historyPending.get(key);
+        const pendingKey = `${refresh ? 'refresh:' : ''}${key}`;
+        if (this.historyPending.has(pendingKey)) return this.historyPending.get(pendingKey);
         const promise = (async () => {
             const cached = this.store?.getRecord('verified-h2h', key, { version: 1, maxAgeMs: 86400000 });
             const verified = cached && verifiedHistory(cached.value, home, away, { teamIdentities }) ? cached : null;
@@ -120,7 +132,7 @@ export class SahadanScraper {
                 const age = verified ? this.clock() - verified.savedAt : -1;
                 return age >= 0 && age <= maxAgeMs;
             };
-            if (withinAge(900000)) {
+            if (!refresh && withinAge(900000)) {
                 return { ...verified.value, archiveCache: archiveMetadata(verified) };
             }
             try {
@@ -131,15 +143,15 @@ export class SahadanScraper {
                     return result;
                 }, { timeoutMs: this.historyDeadlineMs });
             } catch (error) {
-                if (withinAge(86400000) && (error.status || 502) >= 500) {
+                if (!refresh && withinAge(86400000) && (error.status || 502) >= 500) {
                     return { ...verified.value, archiveCache: archiveMetadata(verified, true),
                         cacheWarning: 'Kaynağa şu anda ulaşılamıyor; son doğrulanmış Sahadan tablosu gösteriliyor.' };
                 }
                 throw error;
             }
         })();
-        this.historyPending.set(key, promise);
-        promise.finally(() => { if (this.historyPending.get(key) === promise) this.historyPending.delete(key); }).catch(() => {});
+        this.historyPending.set(pendingKey, promise);
+        promise.finally(() => { if (this.historyPending.get(pendingKey) === promise) this.historyPending.delete(pendingKey); }).catch(() => {});
         return promise;
     }
 

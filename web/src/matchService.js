@@ -34,13 +34,36 @@ export class MatchService {
         this.clock = clock;
     }
 
-    lookup(query, mode = 'auto') {
-        const key = JSON.stringify([mode, query.home, query.away, query.source, query.date, query.matchId, query.code, query.homeTeamId, query.awayTeamId, query.trustedTeamIdentities, query.trustedSourceMatchId, query.trustedSourceMatchDate]);
+    lookup(query, mode = 'auto', { refresh = false, historicalHint = null } = {}) {
+        const key = JSON.stringify([mode, refresh, historicalHint, query.home, query.away, query.source, query.date, query.matchId, query.code, query.homeTeamId, query.awayTeamId, query.trustedTeamIdentities, query.trustedSourceMatchId, query.trustedSourceMatchDate]);
         if (this.pending.has(key)) return this.pending.get(key);
-        const promise = withSourceDeadline(() => this.lookupResolved(query, mode));
+        const promise = withSourceDeadline(() => this.lookupResolved(query, mode, { refresh, historicalHint }));
         this.pending.set(key, promise);
         promise.finally(() => { if (this.pending.get(key) === promise) this.pending.delete(key); }).catch(() => {});
         return promise;
+    }
+
+    // Cache access must not depend on reaching a provider. Freshness is a
+    // separate decision made by the recovery coordinator, never by extending
+    // the lifetime of the underlying verified evidence.
+    async cachedLookup(input, mode = 'auto') {
+        if (mode === 'current' || input.code) return null;
+        const query = await this.resolveTeams(input, { allowMatchReference: Boolean(input.matchId && input.date) });
+        if (query.matchId && query.date) {
+            const cached = this.cachedArchive(query, archiveKey(query.source, query.matchId, query.date));
+            return cached && { ...cached, latestVerified: null, lastLatestCheckedAt: null };
+        }
+        if (query.trustedTeamIdentities) return null;
+        // A directory entry may have been learned after an older name-keyed
+        // archive was saved. The final validator still enforces selected IDs.
+        for (const key of new Set([pairKey(query), pairKey(input)])) {
+            const pointer = this.store.getRecord('archive-pairs', key, { version: ARCHIVE_VERSION });
+            if (!pointer || (query.date && pointer.value.date !== query.date)) continue;
+            const cached = this.cachedArchive({ ...query, date: query.date || pointer.value.date }, pointer.value.key);
+            if (cached) return { ...cached, archiveCache: { ...cached.archiveCache, stale: true },
+                latestVerified: false, lastLatestCheckedAt: null };
+        }
+        return null;
     }
 
     async resolveTeams(query, { allowMatchReference = false } = {}) {
@@ -100,7 +123,7 @@ export class MatchService {
         if (!record || !verifiedArchive(record.value, query)
             || key !== archiveKey(query.source, record.value.match.id, record.value.match.date)) return null;
         // Missing archives can be published later, so unavailable odds are not permanent.
-        if (!normalizeResponse(record.value).hasOdds && Date.now() - record.savedAt > 86400000) return null;
+        if (!normalizeResponse(record.value).hasOdds && this.clock() - record.savedAt > 86400000) return null;
         return normalizeResponse({ ...record.value, isHistorical: true, archiveCache: archiveMetadata(record) });
     }
 
@@ -204,15 +227,28 @@ export class MatchService {
         }
     }
 
-    async lookupResolved(input, mode) {
+    async lookupResolved(input, mode, { refresh = false, historicalHint = null } = {}) {
         // Selected archives and exact bulletin codes already identify one
         // match. Their ordinary provider identity checks remain authoritative;
         // free pair searches and H2H still require a specific team name.
         const allowMatchReference = Boolean((input.matchId && input.date) || (input.code && !input.date && mode !== 'historical'));
         const query = await this.resolveTeams(input, { allowMatchReference });
+        const hint = !query.date && !query.matchId && !query.code ? historicalHint : null;
+        if (hint && (!/^[a-z0-9]{1,64}$/.test(hint.id || '') || !/^\d{4}-\d{2}-\d{2}$/.test(hint.date || '')
+            || !Number.isFinite(Date.parse(hint.date)) || new Date(hint.date).toISOString().slice(0, 10) !== hint.date)) {
+            throw new SourceError('Doğrulanmış geçmiş maç referansı geçersiz.', 400);
+        }
+        if (hint) {
+            const exact = { ...query, date: hint.date, matchId: hint.id };
+            const cached = this.cachedArchive(exact, archiveKey(query.source, hint.id, hint.date));
+            if (cached) {
+                await this.verifyTrustedResult(query, cached);
+                return cached;
+            }
+        }
         const warnings = [];
         const errors = [];
-        if (query.matchId && query.date) {
+        if (!refresh && query.matchId && query.date) {
             const cached = this.cachedArchive(query, archiveKey(query.source, query.matchId, query.date));
             if (cached) return this.enrichCachedArchive(query, cached);
         }
@@ -234,15 +270,15 @@ export class MatchService {
             if (mode === 'current' || query.code) throw new SourceError('Güncel maç bulunamadı.', 404);
         }
         let recent = null;
-        if (!query.date) {
+        if (!query.date && !hint) {
             try { recent = await this.nesine.recent(query.home, query.away); }
             catch (error) {
                 errors.push(error);
                 warnings.push('Son tamamlanan maç doğrulanamadı; gösterilen geçmiş maç en yeni karşılaşma olmayabilir.');
             }
         }
-        const date = query.date || recent?.date;
-        const pair = !query.trustedTeamIdentities && this.store.getRecord('archive-pairs', pairKey(query), { version: ARCHIVE_VERSION, maxAgeMs: 3600000 });
+        const date = query.date || recent?.date || hint?.date;
+        const pair = !refresh && !query.trustedTeamIdentities && this.store.getRecord('archive-pairs', pairKey(query), { version: ARCHIVE_VERSION });
         if (!query.matchId && pair && (!date || pair.value.date === date)) {
             const cached = this.cachedArchive({ ...query, date: date || pair.value.date }, pair.value.key);
             if (cached) {
@@ -256,7 +292,7 @@ export class MatchService {
         const remaining = getSourceRemainingMs();
         const primaryBudget = mayUseAlternate && remaining > 3000
             ? Math.min(25000, Math.max(1000, remaining - 20000)) : remaining;
-        let effectiveQuery = { ...query, date };
+        let effectiveQuery = { ...query, date, ...(hint ? { matchId: hint.id } : {}) };
         let result;
         let trustedResultVerified = false;
         let primarySignal;
@@ -277,7 +313,7 @@ export class MatchService {
             const alternateBudget = Math.min(20000, getSourceRemainingMs() - 1000);
             if (!mayUseAlternate || !transportFailure || alternateBudget <= 0) throw primaryError;
             const alternate = query.source === 'mackolik' ? 'sahadan' : 'mackolik';
-            const alternateQuery = { ...query, source: alternate, date };
+            const alternateQuery = { ...query, source: alternate, date, ...(hint ? { matchId: hint.id } : {}) };
             try {
                 const candidate = await withSourceDeadline(
                     () => this.historical.resolveHistoricalOdds(alternateQuery), { timeoutMs: alternateBudget });
@@ -319,7 +355,8 @@ export class MatchService {
         const key = archiveKey(effectiveQuery.source, result.match.id, result.match.date);
         saveVerified(this.store, 'verified-archives', key, result, { version: ARCHIVE_VERSION });
         if (!query.date && !query.matchId && !query.trustedTeamIdentities) saveVerified(this.store, 'archive-pairs', pairKey(effectiveQuery), { key, date: result.match.date }, { version: ARCHIVE_VERSION });
-        return normalizeResponse({ ...result, isHistorical: true, warnings });
+        return normalizeResponse({ ...result, isHistorical: true, warnings,
+            archiveCache: { savedAt: new Date(this.clock()).toISOString(), fromCache: false, stale: false } });
     }
 }
 

@@ -51,6 +51,24 @@ function exactName(left, right) {
     return Boolean(leftAlias && rightAlias && leftAlias.name === rightAlias.name && leftAlias.squad === rightAlias.squad);
 }
 
+function exactNameKeys(name) {
+    const squad = identity(name).squad;
+    const base = baseName(name);
+    if (!base) return [];
+    const keys = [JSON.stringify(['base', squad, base.replaceAll(' ', '')])];
+    const alias = explicitTeamAlias(name);
+    if (alias) keys.push(JSON.stringify(['alias', squad, alias.name, alias.squad]));
+    return keys;
+}
+
+function copyTeam(team) {
+    return { ...team, aliases: [...team.aliases], providers: team.providers.map(provider => ({ ...provider })) };
+}
+
+function sameRevisions(left, right) {
+    return left && right && left.teams === right.teams && left.archives === right.archives;
+}
+
 // Also useful when querying provider autocomplete: the original user input is
 // retained by callers, while supported spelling variants get a useful query.
 export function canonicalTeamQuery(name) {
@@ -97,6 +115,8 @@ async function defaultSearchProvider(q) {
 }
 
 export class TeamDirectory {
+    #snapshot;
+
     constructor({ store = getReliabilityStore(), searchProvider = defaultSearchProvider } = {}) {
         this.store = store;
         this.searchProvider = searchProvider;
@@ -144,7 +164,20 @@ export class TeamDirectory {
         return evidence;
     }
 
+    #revisions() {
+        if (typeof this.store.getNamespaceRevision !== 'function') return null;
+        return { teams: this.store.getNamespaceRevision(NAMESPACE), archives: this.store.getNamespaceRevision('verified-archives') };
+    }
+
     #catalogue() {
+        const revisions = this.#revisions();
+        if (this.#snapshot?.store === this.store && sameRevisions(this.#snapshot.revisions, revisions)) return this.#snapshot.catalogue;
+        const catalogue = this.#buildCatalogue(revisions);
+        this.#snapshot = catalogue.revisions ? { store: this.store, revisions: catalogue.revisions, catalogue } : undefined;
+        return catalogue;
+    }
+
+    #buildCatalogue(revisions) {
         const evidence = this.#archiveEvidence();
         // Validated source archives can contain teams that autocomplete never
         // observed. Supply those exact source IDs before constructing groups.
@@ -163,6 +196,10 @@ export class TeamDirectory {
                 }
             }
         }
+        // Hydration above can write learned identities. Capture its revision
+        // before reading the final teams, so those writes do not stale the new
+        // snapshot. An external commit during construction must not be cached.
+        const hydratedRevisions = this.#revisions();
         const raw = this.store.listRecords(NAMESPACE)
             .filter(record => record.version === VERSION && record.key === record.value?.id && this.#validRecord(record.value))
             .map(record => record.value);
@@ -223,7 +260,21 @@ export class TeamDirectory {
             teams.push(combined);
             for (const member of members) byId.set(member.id, combined);
         }
-        return { teams, byId };
+        const byName = new Map();
+        const order = new Map();
+        teams.forEach((team, index) => {
+            order.set(team, index);
+            for (const name of [team.name, ...team.aliases]) {
+                for (const key of exactNameKeys(qualifyName(name, team.squad))) {
+                    const candidates = byName.get(key) || new Set();
+                    candidates.add(team);
+                    byName.set(key, candidates);
+                }
+            }
+        });
+        const finalRevisions = this.#revisions();
+        const stable = revisions && revisions.archives === hydratedRevisions?.archives && sameRevisions(hydratedRevisions, finalRevisions);
+        return { teams, byId, byName, order, revisions: stable ? finalRevisions : null };
     }
 
     #teams() {
@@ -232,6 +283,19 @@ export class TeamDirectory {
 
     #matches(team, name) {
         return identity(name).squad === team.squad && [team.name, ...team.aliases].some(alias => exactName(name, qualifyName(alias, team.squad)));
+    }
+
+    #exactMatches(catalogue, name) {
+        const candidates = new Set();
+        for (const key of exactNameKeys(name)) {
+            for (const team of catalogue.byName.get(key) || []) candidates.add(team);
+        }
+        return [...candidates].filter(team => this.#matches(team, name))
+            .sort((left, right) => catalogue.order.get(left) - catalogue.order.get(right));
+    }
+
+    prepare() {
+        this.#catalogue();
     }
 
     observe({ source, providerId, name, aliases = [], squad, country } = {}) {
@@ -255,11 +319,11 @@ export class TeamDirectory {
         }
         const value = {
             id, name, squad: observedSquad,
-            aliases: [...new Set([...(old?.aliases || []), ...(old ? [old.name] : []), ...(providerName !== name ? [providerName] : []), ...aliases.map(alias => alias.trim())])],
+            aliases: [...new Set([...(old?.aliases || []), ...(old && old.name !== name ? [old.name] : []), ...(providerName !== name ? [providerName] : []), ...aliases.map(alias => alias.trim())])],
             providers: [{ source, providerId }],
             ...(displayName(country) || old?.country ? { country: displayName(country) || old.country } : {})
         };
-        this.store.setRecord(NAMESPACE, id, value, { version: VERSION });
+        if (JSON.stringify(old) !== JSON.stringify(value)) this.store.setRecord(NAMESPACE, id, value, { version: VERSION });
         return value;
     }
 
@@ -268,12 +332,12 @@ export class TeamDirectory {
             if (typeof id !== 'string' || !ID_PATTERN.test(id)) return null;
             const raw = this.store.getRecord(NAMESPACE, id, { version: VERSION })?.value;
             if (!this.#validRecord(raw) || raw.id !== id) return null;
-            const team = { ...(this.#catalogue().byId.get(id) || raw), id };
+            const team = { ...copyTeam(this.#catalogue().byId.get(id) || raw), id };
             return name === undefined || name === null ? team : displayName(name) && this.#matches(team, name) ? team : null;
         }
         if (!displayName(name)) return null;
-        const matches = this.#teams().filter(team => this.#matches(team, name));
-        return matches.length === 1 ? matches[0] : null;
+        const matches = this.#exactMatches(this.#catalogue(), name);
+        return matches.length === 1 ? copyTeam(matches[0]) : null;
     }
 
     #suggestions(teams, q, discovered = new Set()) {
@@ -293,8 +357,9 @@ export class TeamDirectory {
     async search(q) {
         if (!displayName(q) || normalizeTeamName(q).length < 2) return [];
         q = q.trim();
-        const teams = this.#teams();
-        const exact = teams.filter(team => this.#matches(team, q));
+        const catalogue = this.#catalogue();
+        const teams = catalogue.teams;
+        const exact = this.#exactMatches(catalogue, q);
         if (exact.length) return exact.slice(0, 8).map(project);
         const local = this.#suggestions(teams, q);
         if (local.length) return local;

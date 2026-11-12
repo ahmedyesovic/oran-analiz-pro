@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { getReliabilityStore } from './reliabilityStore.js';
 
-// Transport cache is deliberately process-local; only cooldowns are durable here.
+// Response bodies stay process-local; provider cooldowns and breakers are durable.
 const cache = new Map();
 const traces = new Map();
 const hosts = new Map();
@@ -31,17 +31,19 @@ const hostConcurrency = 2;
 const queueLimit = 32;
 
 export class SourceError extends Error {
-    constructor(message, status = 502, { upstreamStatus, retryAfter, cause } = {}) {
+    constructor(message, status = 502, { upstreamStatus, retryAfter, cause, retryable, errorCode } = {}) {
         super(message, cause === undefined ? undefined : { cause });
         this.status = status;
         this.upstreamStatus = upstreamStatus;
         this.retryAfter = retryAfter;
+        if (retryable !== undefined) this.retryable = retryable;
+        if (errorCode !== undefined) this.errorCode = errorCode;
     }
 }
 
 class SourceConnectionError extends SourceError {
     constructor(source, cause) {
-        super(`${source}: kaynağa bağlantı kurulamadı.`, 502, { cause });
+        super(`${source}: kaynağa bağlantı kurulamadı.`, 502, { cause, retryable: true, errorCode: 'SOURCE_CONNECTION' });
     }
 }
 
@@ -57,8 +59,8 @@ function sourceAddress(url, source) {
     return address;
 }
 
-function timeoutError(source) {
-    return new SourceError(`${source || 'Kaynak'}: zaman aşımı.`, 504);
+function timeoutError(source, errorCode = 'SOURCE_DEADLINE') {
+    return new SourceError(`${source || 'Kaynak'}: zaman aşımı.`, 504, { retryable: true, errorCode });
 }
 
 function raceSignal(promise, signal) {
@@ -134,6 +136,108 @@ function coordinationHost(address) {
     return address.hostname === 'duckduckgo.com' ? 'html.duckduckgo.com' : address.hostname;
 }
 
+// Keys contain only fixed operation labels and allowlisted hosts. User queries,
+// team slugs and provider IDs must never create new circuit scopes.
+function breakerScope(address) {
+    const host = coordinationHost(address);
+    const path = address.pathname.toLowerCase();
+    if (searchEngines.has(host)) return `search:${host}`;
+    if (host === 'www.sahadan.com') {
+        if (path === '/api/index/home-search') return 'sahadan:search';
+        if (path === '/api/index/match-detail') return 'sahadan:detail';
+        if (path === '/api/index/rates-match') return 'sahadan:rates';
+        if (path.startsWith('/takim/')) return 'sahadan:team';
+        if (path.startsWith('/mac/') && path.endsWith('/karsilastirma')) return 'sahadan:h2h';
+        if (path.startsWith('/mac/')) return 'sahadan:detail';
+    }
+    if (host === 'www.mackolik.com') {
+        if (path === '/perform/p0/ajax/components/competition/livescores/json') return 'mackolik:daily';
+        if (path === '/ajax/search') return 'mackolik:search';
+        if (path.startsWith('/takim/')) return 'mackolik:fixtures';
+        if (path.startsWith('/mac/') && path.includes('/iddaa/')) return 'mackolik:odds';
+    }
+    if (host === 'cdnbulten.nesine.com') return 'nesine:bulletin';
+    if (host === 'ls.nesine.com') return 'nesine:results';
+    return `${allowedHosts.get(host)}:other`;
+}
+
+const breakerWindowMs = 300000;
+const breakerInitialDelayMs = 30000;
+const breakerMaxDelayMs = 300000;
+
+function readBreaker(scope) {
+    const record = getReliabilityStore().getRecord('provider-breakers', scope, { version: 1 });
+    const value = record?.value;
+    if (!value || !Array.isArray(value.failures) || value.failures.length > 3
+        || value.failures.some(time => !Number.isSafeInteger(time) || time < 0)
+        || !Number.isSafeInteger(value.openUntil) || value.openUntil < 0
+        || !Number.isSafeInteger(value.delayMs) || value.delayMs < 0 || value.delayMs > breakerMaxDelayMs
+        || !Number.isSafeInteger(value.probeUntil) || value.probeUntil < 0
+        || !(value.probeToken === null || (typeof value.probeToken === 'string' && /^[a-f0-9-]{36}$/.test(value.probeToken)))) return null;
+    return value;
+}
+
+function recoveringError(address, until) {
+    const retryAfter = Math.max(1, Math.ceil((until - Date.now()) / 1000));
+    return new SourceError(`${allowedHosts.get(address.hostname)}: kaynak geçici olarak kullanılamıyor. ${retryAfter} saniye sonra yeniden deneyin.`, 503,
+        { retryAfter, retryable: true, errorCode: 'SOURCE_RECOVERING' });
+}
+
+function checkBreaker(address, admission) {
+    const state = readBreaker(admission.scope);
+    if (!state) return;
+    if (admission.probeToken && admission.probeToken === state.probeToken) return;
+    if (state.openUntil > Date.now()) throw recoveringError(address, state.openUntil);
+    if (state.delayMs > 0) throw recoveringError(address, Math.max(state.probeUntil, Date.now() + 1000));
+}
+
+function admitBreaker(address, context) {
+    const scope = breakerScope(address);
+    const state = readBreaker(scope);
+    if (!state || state.delayMs === 0) return { scope, probeToken: null };
+    const now = Date.now();
+    if (state.openUntil > now || state.probeUntil > now) {
+        throw recoveringError(address, Math.max(state.openUntil, state.probeUntil));
+    }
+    const probeToken = randomUUID();
+    // A durable lease allows a single recovery probe even across module reload.
+    // After process death it expires within the probe's original total budget.
+    const probeUntil = context.expires;
+    getReliabilityStore().setRecord('provider-breakers', scope, { ...state, probeToken, probeUntil }, { version: 1 });
+    return { scope, probeToken };
+}
+
+function finishBreaker(admission, { error, context, attempted }) {
+    const store = getReliabilityStore();
+    const state = readBreaker(admission.scope);
+    if (admission.probeToken && admission.probeToken !== state?.probeToken) return;
+    if (!error) {
+        store.deleteRecord('provider-breakers', admission.scope);
+        return;
+    }
+    const now = Date.now();
+    // Real rate limits already have a durable, authoritative Retry-After policy.
+    // They remain retryable for queued/cache callers but do not open this circuit.
+    if (!attempted || !isRetryableSourceError(error) || error.upstreamStatus === 429 || error.errorCode === 'SOURCE_RECOVERING'
+        || context.signal.aborted || context.expires <= now) {
+        if (admission.probeToken && state) {
+            store.setRecord('provider-breakers', admission.scope, { ...state, probeToken: null, probeUntil: 0 }, { version: 1 });
+        }
+        return;
+    }
+    // Other requests may already have held a host slot when this circuit opened.
+    // Only the admitted recovery probe may extend an existing open interval.
+    if (!admission.probeToken && state?.delayMs > 0) return;
+    const failures = (state?.failures || []).filter(time => now - time >= 0 && now - time <= breakerWindowMs);
+    failures.push(now);
+    const shouldOpen = Boolean(admission.probeToken) || failures.length >= 3;
+    const delayMs = shouldOpen ? Math.min(breakerMaxDelayMs, state?.delayMs ? state.delayMs * 2 : breakerInitialDelayMs) : 0;
+    store.setRecord('provider-breakers', admission.scope, {
+        failures: failures.slice(-3), openUntil: shouldOpen ? now + delayMs : 0,
+        delayMs, probeToken: null, probeUntil: 0
+    }, { version: 1 });
+}
+
 function cooldownUntil(address) {
     const store = getReliabilityStore();
     const host = coordinationHost(address);
@@ -180,21 +284,26 @@ function headerValue(headers, name) {
     return entry?.[1];
 }
 
+function retryAfterMs(headers) {
+    const header = String(headerValue(headers, 'retry-after') || '').trim();
+    const delay = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
+    return delay > 0 && Number.isSafeInteger(Date.now() + delay) ? delay : null;
+}
+
 // Browser navigation must report its HTTP status through this same cooldown path.
 export function sourceResponseStatus(url, status, headers, { source } = {}) {
     const address = sourceAddress(url, source);
     if (!Number.isInteger(status) || status < 100 || status > 599) throw new SourceError('Kaynak geçerli HTTP durumu döndürmedi.');
     if (searchEngines.has(address.hostname) && [202, 403].includes(status)) throw markSearchBlocked(address.href, { status });
     if (status === 429) {
-        const header = String(headerValue(headers, 'retry-after') || '').trim();
-        const delay = /^\d+$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
-        const proposedUntil = Date.now() + delay;
-        const until = Number.isSafeInteger(proposedUntil) && delay > 0 ? proposedUntil : Date.now() + 60000;
+        const until = Date.now() + (retryAfterMs(headers) ?? 60000);
         getReliabilityStore().setCooldown(coordinationHost(address), Math.max(until, cooldownUntil(address)));
         throw rateLimitError(address, source, cooldownUntil(address) || until);
     }
     if (status < 200 || status >= 300) {
-        throw new SourceError(`${source || address.hostname}: HTTP ${status}`, 502, { upstreamStatus: status });
+        const retryMs = retryAfterMs(headers);
+        throw new SourceError(`${source || address.hostname}: HTTP ${status}`, 502,
+            { upstreamStatus: status, ...(retryMs === null ? {} : { retryAfter: Math.ceil(retryMs / 1000) }) });
     }
 }
 
@@ -248,7 +357,8 @@ function errorCodes(error) {
 }
 
 function isTlsError(error) {
-    return errorCodes(error).some(code => /CERT|SSL/.test(code));
+    return errorCodes(error).some(code => /CERT|SSL|TLS/.test(code))
+        || /\bnet::ERR_(CERT|SSL|TLS)_/.test(error?.message || '');
 }
 
 function isConnectionError(error) {
@@ -259,10 +369,24 @@ function isConnectionError(error) {
     return /\bnet::ERR_(CONNECTION_(RESET|CLOSED|REFUSED|TIMED_OUT)|NAME_NOT_RESOLVED|NETWORK_CHANGED|INTERNET_DISCONNECTED)\b/.test(error?.message || '');
 }
 
+// HTTP status on its own is not evidence of a transport failure: parser and
+// identity errors also use 502. Keep this contract shared by stale-cache users.
+export function isRetryableSourceError(error) {
+    if (!error || ['AbortError', 'SourceSupersededError'].includes(error.name) || isTlsError(error)) return false;
+    if ((error instanceof TypeError && !isConnectionError(error)) || error instanceof SyntaxError
+        || error.status === 404 || error.upstreamStatus === 404) return false;
+    if (error.retryable === false) return false;
+    return error.retryable === true || isConnectionError(error)
+        || [500, 502, 503, 504, 429].includes(error.upstreamStatus)
+        || (error instanceof SourceError && error.status === 504);
+}
+
 function normalizedError(error, source) {
     if (error instanceof SourceError) return error;
-    if (['TimeoutError', 'AbortError'].includes(error?.name)) return timeoutError(source);
-    if (isTlsError(error)) return new SourceError(`${source}: kaynağın TLS sertifikası doğrulanamadı.`, 502, { cause: error });
+    if (error?.name === 'TimeoutError') return timeoutError(source, 'SOURCE_ATTEMPT_TIMEOUT');
+    if (error?.name === 'AbortError') return error;
+    if (isTlsError(error)) return errorCodes(error).length
+        ? new SourceError(`${source}: kaynağın TLS sertifikası doğrulanamadı.`, 502, { cause: error }) : error;
     if (isConnectionError(error)) return new SourceConnectionError(source, error);
     return error;
 }
@@ -291,23 +415,26 @@ function logAttempt(address, source, attempt, startedAt, queueMs, error) {
     }));
 }
 
-async function sourceAttempt(address, work, { source, timeout, attempt }, context, timing) {
+async function sourceAttempt(address, work, { source, timeout, attempt, admission }, context, timing) {
+    checkBreaker(address, admission);
     let release;
     try { release = await acquireHost(address, context); }
     finally { timing.queueMs = Math.max(0, Date.now() - timing.startedAt); }
     try {
         checkDeadline(context);
         checkCooldown(address, source);
+        checkBreaker(address, admission);
     } catch (error) { release(); throw error; }
     const controller = new AbortController();
     const abort = () => controller.abort(context.signal.reason);
     context.signal.addEventListener('abort', abort, { once: true });
-    const timer = setTimeout(() => controller.abort(timeoutError(source || address.hostname)),
+    const timer = setTimeout(() => controller.abort(timeoutError(source || address.hostname, 'SOURCE_ATTEMPT_TIMEOUT')),
         Math.max(0, Math.min(timeout, context.expires - Date.now())));
     // A browser callback may ignore cancellation. Keep its host slot occupied until
     // its actual resource lifecycle settles, even if its caller has timed out.
     const operation = Promise.resolve().then(() => {
         if (controller.signal.aborted) throw controller.signal.reason;
+        timing.attempted = true;
         return work({ signal: controller.signal, attempt });
     }).finally(() => {
         clearTimeout(timer);
@@ -317,10 +444,11 @@ async function sourceAttempt(address, work, { source, timeout, attempt }, contex
     return raceSignal(operation, controller.signal);
 }
 
-async function retryDelay(context) {
+async function retryDelay(context, retryAfter) {
     checkDeadline(context);
     let timer;
-    try { await raceSignal(new Promise(resolve => { timer = setTimeout(resolve, 250); }), context.signal); }
+    const delayMs = Math.min(Math.max(250, Number.isFinite(retryAfter) ? retryAfter * 1000 : 0), Math.max(0, context.expires - Date.now()));
+    try { await raceSignal(new Promise(resolve => { timer = setTimeout(resolve, delayMs); }), context.signal); }
     finally { clearTimeout(timer); }
     checkDeadline(context);
 }
@@ -339,23 +467,38 @@ export async function runSourceTask(url, work, { source, timeout = 15000, dedupl
     // inside one search context; completed cache entries remain process-wide.
     const tasks = context.tasks;
     if (deduplicate && tasks.has(key)) return raceSignal(tasks.get(key), context.signal);
+    checkCooldown(address, source);
+    const admission = admitBreaker(address, context);
     const operation = (async () => {
-        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-            checkDeadline(context);
-            checkCooldown(address, source);
-            const startedAt = Date.now();
-            const timing = { startedAt, queueMs: 0 };
-            try {
-                const value = await sourceAttempt(address, work, { source, timeout, attempt }, context, timing);
-                logAttempt(address, source, attempt, startedAt, timing.queueMs);
-                return value;
-            } catch (error) {
-                const normalized = normalizedError(error, source || address.hostname);
-                logAttempt(address, source, attempt, startedAt, timing.queueMs, normalized);
-                const retryable = isConnectionError(error) || [502, 503, 504].includes(normalized?.upstreamStatus);
-                if (attempt === maxAttempts || !retryable || context.signal.aborted) throw normalized;
-                await retryDelay(context);
+        let attempted = false;
+        let failure;
+        try {
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                checkDeadline(context);
+                checkCooldown(address, source);
+                checkBreaker(address, admission);
+                const startedAt = Date.now();
+                const timing = { startedAt, queueMs: 0, attempted: false };
+                try {
+                    const value = await sourceAttempt(address, work, { source, timeout, attempt, admission }, context, timing);
+                    logAttempt(address, source, attempt, startedAt, timing.queueMs);
+                    return value;
+                } catch (error) {
+                    const normalized = context.signal.aborted ? context.signal.reason : normalizedError(error, source || address.hostname);
+                    logAttempt(address, source, attempt, startedAt, timing.queueMs, normalized);
+                    const retryable = isRetryableSourceError(normalized) && normalized?.upstreamStatus !== 429
+                        && normalized?.errorCode !== 'SOURCE_RECOVERING';
+                    if (attempt === maxAttempts || !retryable || context.signal.aborted) throw normalized;
+                    await retryDelay(context, normalized.retryAfter);
+                } finally {
+                    attempted ||= timing.attempted;
+                }
             }
+        } catch (error) {
+            failure = error;
+            throw error;
+        } finally {
+            finishBreaker(admission, { error: failure, context, attempted });
         }
     })();
     if (deduplicate) tasks.set(key, operation);

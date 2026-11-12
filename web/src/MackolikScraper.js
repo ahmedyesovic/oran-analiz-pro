@@ -434,9 +434,26 @@ export class MackolikScraper {
             const slug = `${this.normalizeTeamName(homeTeam)} vs ${this.normalizeTeamName(awayTeam)}`.replaceAll(' ', '-');
             const url = `https://www.mackolik.com/mac/${slug}/iddaa/${matchId}`;
             const html = await sourceText(url, { source: 'mackolik', ttl: 300000 });
-            const parsed = this.parseMackolikIddaa(html, url);
-            if (parsed.matchId !== matchId || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities) || !parsed.score) {
+            let parsed = this.parseMackolikIddaa(html, url);
+            if (parsed.matchId !== matchId || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities)) {
+                sourceHttp.invalidateSourceCache(url);
                 throw new SourceError('Seçilen Mackolik maçının kimlik, takım, tarih veya sonuç bilgisi doğrulanamadı.');
+            }
+            if (!parsed.score) {
+                // The static document can precede score hydration. Its verified
+                // identity pins this retry to exactly this match and URL.
+                sourceHttp.invalidateSourceCache(url);
+                parsed = await this.withBrowserLock(() => this.scrapeWithBrowser({
+                    homeTeam, awayTeam, matchDate, teamIdentities, discoveryErrors: [], waitForScore: true,
+                    searchResults: [{ url, title: `${homeTeam} vs ${awayTeam}, ${parsed.matchDate}` }]
+                }));
+                if (!parsed) throw new SourceError('mackolik: seçilen maçın tamamlanmış sonucu henüz yüklenmedi.', 504,
+                    { retryable: true, errorCode: 'SOURCE_INCOMPLETE_MATCH' });
+                if (parsed.matchId !== matchId || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities)) {
+                    throw new SourceError('Seçilen Mackolik maçının kimlik, takım veya tarih bilgisi doğrulanamadı.');
+                }
+                if (!parsed.score) throw new SourceError('mackolik: seçilen maçın tamamlanmış sonucu henüz yüklenmedi.', 504,
+                    { retryable: true, errorCode: 'SOURCE_INCOMPLETE_MATCH' });
             }
             this.log(`Seçilen maç doğrudan kimliğiyle doğrulandı: ${matchId}`);
             this.rememberTeams(parsed);
@@ -515,7 +532,7 @@ export class MackolikScraper {
         return this.discoverWithSearch({ query, homeTeam, awayTeam, matchDate, triedUrls, discoveryErrors, teamIdentities });
     }
 
-    async scrapeWithBrowser({ homeTeam, awayTeam, matchDate, discoveryErrors, teamIdentities, searchResults }) {
+    async scrapeWithBrowser({ homeTeam, awayTeam, matchDate, discoveryErrors, teamIdentities, searchResults, waitForScore = false }) {
         let page = null;
         const signal = sourceHttp.getSourceDeadlineSignal?.();
         const cancel = () => {
@@ -546,12 +563,39 @@ export class MackolikScraper {
                         try {
                             const response = await page.goto(finalIddaaUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
                             sourceHttp.sourceResponseStatus(finalIddaaUrl, response?.status() || 502, response?.headers() || {}, { source: 'mackolik' });
+                            if (waitForScore) {
+                                try {
+                                    await page.waitForFunction(() => {
+                                        const home = document.querySelector('.p0c-soccer-match-details-header__score-home')?.textContent.trim() || '';
+                                        const away = document.querySelector('.p0c-soccer-match-details-header__score-away')?.textContent.trim() || '';
+                                        return /^\d+$/.test(home) && /^\d+$/.test(away);
+                                    }, { timeout: Math.max(1, Math.min(5000, sourceHttp.getSourceRemainingMs())), signal });
+                                } catch (error) {
+                                    sourceHttp.assertSourceDeadline();
+                                    if (signal?.aborted) throw signal.reason;
+                                    if (error?.name !== 'TimeoutError') throw error;
+                                    // Inspect the final document even after the
+                                    // bounded wait: identity mismatches remain
+                                    // terminal, and a score may have just arrived.
+                                }
+                            }
                             return await page.content();
                         } finally { signal?.removeEventListener('abort', cancel); }
                     };
-                    const html = await sourceHttp.runSourceTask(finalIddaaUrl, open, { source: 'mackolik', timeout: 25000, deduplicate: false });
+                    // An attempt abort closes this page. Pinned hydration lets
+                    // the recovery queue retry with a fresh browser lifecycle.
+                    const html = await sourceHttp.runSourceTask(finalIddaaUrl, open,
+                        { source: 'mackolik', timeout: 25000, deduplicate: false, maxAttempts: waitForScore ? 1 : 2 });
                     const parsed = this.parseMackolikIddaa(html, finalIddaaUrl);
                     const expectedId = new URL(finalIddaaUrl).pathname.split('/').pop();
+                    if (waitForScore) {
+                        if (!parsed || parsed.matchId !== expectedId
+                            || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities)) {
+                            throw new SourceError('Seçilen Mackolik maçının kimlik, takım veya tarih bilgisi doğrulanamadı.');
+                        }
+                        if (!parsed.score) throw new SourceError('mackolik: seçilen maçın tamamlanmış sonucu henüz yüklenmedi.', 504,
+                            { retryable: true, errorCode: 'SOURCE_INCOMPLETE_MATCH' });
+                    }
                     if (!parsed || parsed.matchId !== expectedId || !parsed.score
                         || !this.matchesRequestedMatch(parsed, homeTeam, awayTeam, matchDate, teamIdentities)) continue;
 
@@ -570,6 +614,7 @@ export class MackolikScraper {
 
         } catch (error) {
             this.log(`Hata oluştu: ${error.message}`);
+            if (signal?.aborted) throw signal.reason;
             throw error instanceof SourceError ? error : new SourceError(`mackolik: geçmiş maç sorgusu tamamlanamadı: ${error.message}`);
         } finally {
             signal?.removeEventListener('abort', cancel);

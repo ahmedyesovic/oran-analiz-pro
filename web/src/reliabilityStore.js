@@ -49,6 +49,8 @@ function decode(row) {
 export class ReliabilityStore {
     #db;
     #clock;
+    #namespaceRevisions = new Map();
+    #visibility = new Map();
 
     constructor({ filename = ':memory:', clock = () => Date.now() } = {}) {
         if (typeof filename !== 'string' || !filename || typeof clock !== 'function') throw new TypeError('Invalid reliability store options.');
@@ -97,17 +99,45 @@ export class ReliabilityStore {
         requireVersion(version);
         requireTimestamp(savedAt);
         const json = encode(value);
+        let changed = false;
         this.#db.transaction(() => {
+            const previous = this.#db.prepare('SELECT value, version, savedAt FROM records WHERE namespace = ? AND key = ?').get(namespace, key);
             this.#db.prepare(`INSERT INTO records(namespace, key, value, savedAt, version) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value, savedAt = excluded.savedAt, version = excluded.version`)
                 .run(namespace, key, json, savedAt, version);
-        })();
+            const now = this.#clock();
+            changed = !previous || !Number.isSafeInteger(previous.savedAt) || previous.savedAt < 0
+                || previous.value !== json || previous.version !== version
+                || (previous.savedAt !== savedAt && (previous.savedAt > now || savedAt > now));
+        }).immediate();
+        if (changed) this.#namespaceRevisions.set(namespace, (this.#namespaceRevisions.get(namespace) || 0) + 1);
     }
 
     deleteRecord(namespace, key) {
         requireKey(namespace, 'namespace');
         requireKey(key, 'record key');
-        this.#db.prepare('DELETE FROM records WHERE namespace = ? AND key = ?').run(namespace, key);
+        const result = this.#db.prepare('DELETE FROM records WHERE namespace = ? AND key = ?').run(namespace, key);
+        if (result.changes) this.#namespaceRevisions.set(namespace, (this.#namespaceRevisions.get(namespace) || 0) + 1);
+    }
+
+    // Catalogue users can reuse validated data until relevant content changes.
+    // SQLite's connection-local data_version also detects outside writers;
+    // timestamp-only refreshes from this connection do not rebuild identities.
+    getNamespaceRevision(namespace) {
+        requireKey(namespace, 'namespace');
+        const base = `${this.#namespaceRevisions.get(namespace) || 0}:${this.#db.pragma('data_version', { simple: true })}`;
+        const now = this.#clock();
+        const previous = this.#visibility.get(namespace);
+        if (!previous || previous.base !== base || now < previous.lastAt
+            || (previous.nextAt !== null && now >= previous.nextAt)) {
+            const nextAt = this.#db.prepare('SELECT MIN(savedAt) AS nextAt FROM records WHERE namespace = ? AND savedAt > ?')
+                .get(namespace, now).nextAt;
+            const state = { base, lastAt: now, nextAt, sequence: (previous?.sequence || 0) + 1 };
+            this.#visibility.set(namespace, state);
+            return `${base}:${state.sequence}`;
+        }
+        previous.lastAt = now;
+        return `${base}:${previous.sequence}`;
     }
 
     listRecords(namespace) {
