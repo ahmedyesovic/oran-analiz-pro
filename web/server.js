@@ -5,17 +5,20 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { MatchService, validateQuery } from './src/matchService.js';
 import { SahadanScraper } from './src/SahadanScraper.js';
-import { SourceError, sourceTraces, withSourceDeadline, withRequestTrace, requestTraceId } from './src/sourceHttp.js';
+import { SourceError, sourceTraces, withSourceDeadline, withRequestTrace, requestTraceId, isRetryableSourceError } from './src/sourceHttp.js';
 import { getReliabilityStore } from './src/reliabilityStore.js';
 import { getTeamDirectory } from './src/teamDirectory.js';
 import { PairVariantResolver } from './src/pairVariantResolver.js';
+import { LookupRecovery } from './src/LookupRecovery.js';
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp({ service = new MatchService(), directory = service.directory || getTeamDirectory(),
-    sahadan = new SahadanScraper({ store: service.store || getReliabilityStore(), directory }), pairResolver } = {}) {
+    sahadan = new SahadanScraper({ store: service.store || getReliabilityStore(), directory }), pairResolver, recoveryOptions = {} } = {}) {
+    // Build the validated local index before accepting the first request.
+    directory.prepare?.();
     const app = express();
-    app.use(cors());
+    app.use(cors({ exposedHeaders: ['Retry-After'] }));
     app.use(express.json());
     // Only fixed route names are logged; query strings and team names stay private.
     app.use('/api', (req, res, next) => withRequestTrace(() => {
@@ -53,20 +56,44 @@ export function createApp({ service = new MatchService(), directory = service.di
                 trustedSourceMatchId: choice.sourceMatchId, trustedSourceMatchDate: choice.sourceMatchDate } : {}) };
         return { query: resolved, warning: `Kaynakta doğrulanan takımlar: ${choice.home} - ${choice.away}.` };
     }
+    const { legacyWaitMs = 120000, ...lookupRecoveryOptions } = recoveryOptions;
+    const recovery = typeof service.cachedLookup === 'function' && typeof sahadan.cachedHeadToHead === 'function'
+        ? new LookupRecovery({ service, sahadan, store: service.store || getReliabilityStore(), resolvePair, ...lookupRecoveryOptions }) : null;
+    app.locals.closeRecovery = () => recovery?.close();
+    const observe = req => req.get('X-Lookup-Intent') === 'observe';
+    function requestSignal(req, res) {
+        const controller = new AbortController();
+        const abort = () => controller.abort(new DOMException('İstek kapatıldı.', 'AbortError'));
+        req.once('aborted', abort);
+        res.once('close', () => { if (!res.writableEnded) abort(); req.removeListener('aborted', abort); });
+        return controller.signal;
+    }
+    // Previously published frontends make one request with a 180-second limit.
+    // Keep them attached to the same cold worker while newer clients can poll.
+    const recoveryRequestOptions = (req, res) => ({ observe: observe(req), signal: requestSignal(req, res),
+        ...(req.get('X-Lookup-Capabilities') === 'recovery-v1' ? {} : { foregroundWaitMs: legacyWaitMs }) });
     app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
     for (const [route, mode] of [['fetch-match', 'auto'], ['current-odds', 'current'], ['historical-odds', 'historical']]) {
         app.get(`/api/${route}`, async (req, res, next) => {
             try {
                 const query = validateQuery(req.query, { pairRequired: mode === 'historical' });
-                const resolved = mode === 'auto' ? await resolvePair(query) : { query, warning: null };
-                const result = await service.lookup(resolved.query, mode);
-                res.json(resolved.warning ? { ...result, warnings: [resolved.warning, ...(result.warnings || [])] } : result);
+                if (recovery) {
+                    res.json(await recovery.lookup('odds', { ...query, mode }, recoveryRequestOptions(req, res)));
+                } else {
+                    const result = await withSourceDeadline(async () => {
+                        const resolved = mode === 'auto' ? await resolvePair(query) : { query, warning: null };
+                        const data = await service.lookup(resolved.query, mode);
+                        return resolved.warning ? { ...data, warnings: [resolved.warning, ...(data.warnings || [])] } : data;
+                    });
+                    res.json(result);
+                }
             } catch (error) { next(error); }
         });
     }
     app.get('/api/head-to-head', async (req, res, next) => {
         try {
             const query = validateQuery(req.query, { pairRequired: true });
+            if (recovery) return res.json(await recovery.lookup('h2h', query, recoveryRequestOptions(req, res)));
             const resolved = await resolvePair(query);
             const teams = service.resolveTeams ? await service.resolveTeams(resolved.query) : resolved.query;
             const teamIdentities = resolved.query.trustedTeamIdentities || teams.teamIdentities;
@@ -95,11 +122,13 @@ export function createApp({ service = new MatchService(), directory = service.di
     });
     app.use('/api', (_req, res) => res.status(404).json({ success: false, error: 'API bulunamadı.' }));
     app.use((error, _req, res, _next) => {
+        if (res.destroyed) return;
         console.error(`[API] ${error.message}`);
         if (error.retryAfter) res.set('Retry-After', String(error.retryAfter));
-        const errorCode = error.retryAfter ? 'RATE_LIMITED' : error.status === 504 ? 'TIMEOUT'
-            : error.status === 400 ? 'INVALID_QUERY' : error.status === 404 ? 'NOT_FOUND' : 'PROVIDER_UNAVAILABLE';
-        res.status(error.status || 502).json({ success: false, status: 'ERROR', error: error.message, errorCode });
+        const errorCode = error.errorCode || (error.upstreamStatus === 429 ? 'RATE_LIMITED' : error.status === 504 ? 'TIMEOUT'
+            : error.status === 400 ? 'INVALID_QUERY' : error.status === 404 ? 'NOT_FOUND' : 'PROVIDER_UNAVAILABLE');
+        res.status(error.status || 502).json({ success: false, status: 'ERROR', error: error.message, errorCode,
+            retryable: isRetryableSourceError(error), ...(error.refresh ? { refresh: error.refresh } : {}) });
     });
     const dist = path.join(serverDirectory, 'frontend', 'dist');
     app.use(express.static(fs.existsSync(dist) ? dist : path.join(serverDirectory, 'public')));
@@ -108,5 +137,8 @@ export function createApp({ service = new MatchService(), directory = service.di
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const port = process.env.PORT || 3000;
-    createApp().listen(port, process.env.HOST || '0.0.0.0', () => console.log(`Local backend: http://localhost:${port}`));
+    const app = createApp();
+    const listener = app.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`Local backend: http://localhost:${port}`));
+    listener.once('close', app.locals.closeRecovery);
+    for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => { app.locals.closeRecovery(); listener.close(); });
 }
