@@ -133,7 +133,7 @@ test('empty home schedules continue with away discovery and keep orientation', a
     assert.deepEqual(calls, [searchUrl('Real Madrid'), fixturesUrl('Real Madrid', 'realmadrid'), searchUrl('Sevilla'), fixturesUrl('Sevilla', 'sevilla')]);
 });
 
-test('Chelsea autocomplete failure recovers through the abbreviated Manchester United main-team fixtures', async t => {
+test('Chelsea autocomplete retries HTTP 500 once before recovering through Manchester United main-team fixtures', async t => {
     const calls = mockFetch(t, url => {
         if (url.pathname === '/ajax/search') {
             if (url.searchParams.get('keywords') === 'Chelsea') return new Response('provider failure', { status: 500 });
@@ -151,7 +151,8 @@ test('Chelsea autocomplete failure recovers through the abbreviated Manchester U
     assert.equal(result.candidates[0].awayTeamId, 'unitedmain');
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].upstreamStatus, 500);
-    assert.deepEqual(calls, [searchUrl('Chelsea'), searchUrl('Manchester United'), fixturesUrl('Man. United', 'unitedmain')]);
+    assert.deepEqual(calls, [searchUrl('Chelsea'), searchUrl('Chelsea'), searchUrl('Manchester United'), fixturesUrl('Man. United', 'unitedmain')]);
+    assert.deepEqual(calls.filter(url => new URL(url).pathname.startsWith('/takim/')), [fixturesUrl('Man. United', 'unitedmain')]);
 });
 
 test('no-date discovery follows only the newest older source-advertised season URL', async t => {

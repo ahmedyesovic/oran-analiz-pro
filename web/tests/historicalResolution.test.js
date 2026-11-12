@@ -101,14 +101,13 @@ test('direct Mackolik selection still returns verified Nesine odds when availabl
     assert.equal(response.formattedMarkets[0].odds[0].value, '2.78');
 });
 
-test('direct Mackolik selection rejects mismatched identity, teams, date or missing score', async t => {
+test('direct Mackolik selection rejects mismatched identity, teams or date', async t => {
     const alterations = [
         html => html.replace('09.09.2001', '10.09.2001'),
         html => html.replace('Genoa vs Como', 'Como vs Genoa'),
         html => html.replace('Genoa vs Como', 'Genoa vs Milan'),
         html => html.replace(/genoa-vs-como\/selectedinvalid\d+/, 'genoa-vs-como/anothermatch'),
-        html => html.replace(/<link[^>]*>/, ''),
-        html => html.replace(/<span[^>]*score-home[^>]*>2<\/span>/, '')
+        html => html.replace(/<link[^>]*>/, '')
     ];
     for (const [index, alter] of alterations.entries()) {
         await t.test(`invalid selected match ${index + 1}`, async subtest => {

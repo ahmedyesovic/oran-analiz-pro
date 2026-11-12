@@ -140,6 +140,9 @@ test('maxAttempts one suppresses HTTP and connection retries even with an implic
     const { runSourceTask, sourceResponseStatus, withSourceDeadline } = await freshTransport();
     for (const scoped of [false, true]) {
         for (const kind of ['http', 'connection']) {
+            // These cases test attempt limits independently, rather than a
+            // sequence of failures that should open the durable circuit.
+            getReliabilityStore().deleteRecord('provider-breakers', 'search:html.duckduckgo.com');
             let calls = 0;
             const work = () => {
                 calls++;
