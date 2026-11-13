@@ -159,17 +159,29 @@ test('nonretryable malformed, identity, 404 and TLS failures finish without auto
 });
 
 test('attempt execution is independent from the request deadline and has its own hard budget', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000000 });
     let signal;
+    let started;
+    const ready = new Promise(resolve => { started = resolve; });
     const { coordinator } = setup(t, { attemptTimeoutMs: 35, retryDelaysMs: [1000], run: async () => {
         signal = getSourceDeadlineSignal();
+        started();
         return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
     } });
-    await assert.rejects(withSourceDeadline(async () => {
+    const foreground = withSourceDeadline(async () => {
         coordinator.request('odds', pair);
+        t.mock.timers.tick(0);
         await pause(15);
-    }, { timeoutMs: 5 }), error => error.status === 504);
+    }, { timeoutMs: 5 });
+    const expired = assert.rejects(foreground, error => error.status === 504);
+    await ready;
+    t.mock.timers.tick(5);
+    await expired;
     assert.equal(signal.aborted, false, 'foreground expiry must not cancel the worker');
-    const response = await until(() => coordinator.get('odds', pair), value => value?.state === 'backoff');
+    t.mock.timers.tick(30);
+    await new Promise(resolve => setImmediate(resolve));
+    const response = coordinator.get('odds', pair);
+    assert.equal(response.state, 'backoff');
     assert.equal(response.error.status, 504);
     assert.equal(response.error.retryable, true);
     assert.equal(signal.aborted, true);

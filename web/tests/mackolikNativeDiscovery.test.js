@@ -61,23 +61,22 @@ test('raw autocomplete names bind native IDs and both names to completed oriente
     assert.deepEqual(calls, [searchUrl('Real Madrid'), fixturesUrl('Real Madrid', 'realmadrid')]);
 });
 
-test('an unmatched spelling retries canonical alias search but a matched alias does not', async t => {
+test('an explicit spelling alias starts with the canonical native query', async t => {
     const calls = mockFetch(t, url => {
         if (url.pathname === '/ajax/search') return searchPayload(url.searchParams.get('keywords') === 'Sevillia' ? [] : [['sevilla', 'Sevilla']]);
         return page({ id: 'sevilla', name: 'Sevilla', matches: [row({ homeTeamId: 'sevilla', awayTeamId: 'realmadrid', homeTeamName: 'Sevilla', awayTeamName: 'Real Madrid' })] });
     });
     const result = await new MackolikNativeDiscovery({ clock }).discover('Sevillia', 'Real Madrid');
     assert.equal(result.candidates.length, 1);
-    assert.deepEqual(calls.slice(0, 2), [searchUrl('Sevillia'), searchUrl('Sevilla')]);
-    assert.equal(calls.length, 3);
+    assert.deepEqual(calls, [searchUrl('Sevilla'), fixturesUrl('Sevilla', 'sevilla')]);
 });
 
-test('matching raw aliases avoid a redundant canonical query', async t => {
+test('matching explicit aliases avoid a redundant original-spelling query', async t => {
     const calls = mockFetch(t, url => url.pathname === '/ajax/search'
         ? searchPayload([['sevilla', 'Sevilla']])
         : page({ id: 'sevilla', name: 'Sevilla', matches: [row({ homeTeamId: 'sevilla', awayTeamId: 'realmadrid', homeTeamName: 'Sevilla', awayTeamName: 'Real Madrid' })] }));
     assert.equal((await new MackolikNativeDiscovery({ clock }).discover('Sevillia', 'Real Madrid')).candidates.length, 1);
-    assert.deepEqual(calls, [searchUrl('Sevillia'), fixturesUrl('Sevilla', 'sevilla')]);
+    assert.deepEqual(calls, [searchUrl('Sevilla'), fixturesUrl('Sevilla', 'sevilla')]);
 });
 
 test('known Mackolik IDs skip autocomplete and preserve a selected renamed identity', async t => {

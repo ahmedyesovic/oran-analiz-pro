@@ -84,7 +84,7 @@ test('only transient transport failures trigger alternate and both source direct
     const errors = [
         new SourceError('sahadan: HTTP 429', 503, { upstreamStatus: 429, retryAfter: 60 }),
         new SourceError('sahadan: HTTP 502', 502, { upstreamStatus: 502 }),
-        new SourceError('sahadan: kaynağa bağlantı kurulamadı.', 502)
+        new SourceError('sahadan: kaynağa bağlantı kurulamadı.', 502, { retryable: true, errorCode: 'SOURCE_CONNECTION' })
     ];
     for (const error of errors) {
         const seen = [];

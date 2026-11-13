@@ -165,17 +165,25 @@ test('a deadline covers reading a response body even when the transport ignores 
 test('an overflowing host queue rejects promptly instead of creating unbounded work', async t => {
     const { sourceText, withSourceDeadline } = await freshTransport();
     const releases = [];
+    const controller = new AbortController();
     let calls = 0;
     t.mock.method(globalThis, 'fetch', async () => {
         calls++;
         await new Promise(resolve => releases.push(resolve));
         return new Response('ok');
     });
+    t.after(() => {
+        controller.abort(new DOMException('test cleanup', 'AbortError'));
+        while (releases.length) releases.shift()();
+    });
     const requests = Array.from({ length: 35 }, (_, index) =>
-        withSourceDeadline(() => sourceText(`https://www.mackolik.com/queue-${index}`), { timeoutMs: 50 }));
+        withSourceDeadline(() => sourceText(`https://www.mackolik.com/queue-${index}`),
+            { timeoutMs: 5000, signal: controller.signal }));
     const settled = Promise.allSettled(requests);
-    await turn();
+    const overflow = await requests[34].then(() => null, error => error);
+    assert.equal(overflow?.status, 503);
     assert.equal(calls, 2);
+    controller.abort(new DOMException('test cleanup', 'AbortError'));
     const results = await settled;
     assert.equal(results.filter(result => result.status === 'rejected' && result.reason.status === 503).length, 1);
     while (releases.length) releases.shift()();
