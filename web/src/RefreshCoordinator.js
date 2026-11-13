@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AsyncResource } from 'node:async_hooks';
 import { normalizeTeamName, teamIdentity } from '../../utils/normalize.js';
-import { SourceError, withSourceDeadline, isRetryableSourceError } from './sourceHttp.js';
+import { SourceError, withSourceDeadline, isRetryableSourceError, withLookupTrace } from './sourceHttp.js';
 
 const namespace = 'refresh-jobs';
 const version = 1;
@@ -85,6 +85,7 @@ export class RefreshCoordinator {
     }
 
     persist(key, job) {
+        if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(job.lookupId || '')) job.lookupId = randomUUID();
         try { this.store.setRecord(namespace, key, job, { version, savedAt: this.clock() }); }
         catch { throw serviceError('Yenileme kaydı saklanamadı. Daha sonra yeniden deneyin.', 'REFRESH_STORAGE_UNAVAILABLE'); }
         this.jobs.set(key, job);
@@ -154,6 +155,10 @@ export class RefreshCoordinator {
         this.persist(key, job);
         this.schedule();
         return this.snapshot(job);
+    }
+
+    lookupId(kind, query) {
+        return this.jobs.get(refreshKey(kind, query))?.lookupId;
     }
 
     get(kind, query) {
@@ -230,8 +235,9 @@ export class RefreshCoordinator {
         let usableResult;
         try {
             this.persist(key, job);
-            const result = json(await withSourceDeadline(() => this.run({ kind: job.kind, query: json(job.query) }),
-                { timeoutMs: budget, signal: this.controller.signal }));
+            const result = json(await withLookupTrace(job.lookupId, () => withSourceDeadline(
+                () => this.run({ kind: job.kind, query: json(job.query) }),
+                { timeoutMs: budget, signal: this.controller.signal })));
             if (!result?.success) throw new SourceError('Yenileme geçerli bir sonuç döndürmedi.');
             if (!this.closed) {
                 if (result.latestVerified === false) {
@@ -276,7 +282,7 @@ export class RefreshCoordinator {
             this.running = false;
             if (process.env.NODE_ENV === 'production') {
                 const outcome = this.jobs.get(key);
-                console.info(JSON.stringify({ event: 'refresh-attempt', kind: job.kind, attempt: job.attempt,
+                console.info(JSON.stringify({ event: 'refresh-attempt', lookupId: job.lookupId, kind: job.kind, attempt: job.attempt,
                     elapsedMs: Math.max(0, this.clock() - job.updatedAt), state: outcome?.state || 'closed',
                     ...(outcome?.error ? { errorCode: outcome.error.errorCode, status: outcome.error.status } : {}) }));
             }

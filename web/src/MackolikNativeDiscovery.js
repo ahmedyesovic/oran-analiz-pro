@@ -116,14 +116,16 @@ export class MackolikNativeDiscovery {
             try { return parseMackolikTeamSearch(payload).filter(team => teamNamesMatch(team.name, name)).slice(0, 3); }
             catch (error) { invalidateSourceCache(url); throw error; }
         };
-        const teams = await search(name);
+        // Explicit aliases should reach the known provider spelling even when
+        // autocomplete rejects a misspelling with an HTTP error.
         const canonical = canonicalTeamQuery(name);
-        return !teams.length && canonical !== name ? search(canonical) : teams;
+        const teams = await search(canonical);
+        return !teams.length && canonical !== name ? search(name) : teams;
     }
 
     async readFixtures(url, team, name, season = null) {
         assertSourceDeadline();
-        const html = await sourceText(url, { source: 'mackolik', ttl, timeout: 12000 });
+        const html = await sourceText(url, { source: 'mackolik', ttl, timeout: 12000, sharedRead: true });
         try {
             const page = parseMackolikTeamFixtures(html, team.id);
             if (!qualifiersMatch(page.team.name, name)) throw new SourceError('mackolik: takım sayfasının kadro kimliği uyuşmuyor.');

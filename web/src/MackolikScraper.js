@@ -8,6 +8,7 @@ import * as sourceHttp from './sourceHttp.js';
 import { providerTeamIds } from './verifiedCache.js';
 import { collectMsSets, isFullTimeMs, msLabel, msOutcome, msSnapshot } from './matchBand.js';
 import { MackolikNativeDiscovery } from './MackolikNativeDiscovery.js';
+import { getSharedDiscoveryCache } from './discoveryContext.js';
 import { SEARCH_PROVIDERS, SearchPageError, buildSearchUrl, shuffledSearchProviders,
     parseSearchPage, normalizeSearchResultUrl } from './searchProviders.js';
 import {
@@ -26,6 +27,7 @@ export class MackolikScraper {
         this.directory = options.directory || null;
         this.random = options.random ?? Math.random;
         this.nativeDiscovery = options.nativeDiscovery ?? new MackolikNativeDiscovery();
+        this.discoveryCache = options.discoveryCache || getSharedDiscoveryCache(options.store);
     }
 
     log(msg) {
@@ -214,7 +216,7 @@ export class MackolikScraper {
             url.searchParams.set('matchDate', canonicalMatchDate);
 
             this.log(`Mackolik tarih listesi sorgulanıyor: ${canonicalMatchDate}`);
-            const payload = await sourceJson(url, { source: 'mackolik', ttl: 300000, timeout: 20000 });
+            const payload = await sourceJson(url, { source: 'mackolik', ttl: 300000, timeout: 20000, sharedRead: true });
             if (!payload?.data?.matches || typeof payload.data.matches !== 'object') {
                 throw new SourceError('mackolik: tarih listesi yanıtı geçersiz.');
             }
@@ -344,7 +346,8 @@ export class MackolikScraper {
             // An engine cooldown does not explain a failed native request and
             // must not prevent a later native attempt through Retry-After.
             throw new SourceError(`${providerError.message} Alternatif web araması da tamamlanamadı: ${searchError.message}`, providerError.status,
-                { upstreamStatus: providerError.upstreamStatus, retryAfter: providerError.retryAfter, cause: providerError });
+                { upstreamStatus: providerError.upstreamStatus, retryAfter: providerError.retryAfter, cause: providerError,
+                    retryable: providerError.retryable, errorCode: providerError.errorCode });
         }
         if (providerError || searchError) throw providerError || searchError;
         return null;
@@ -424,7 +427,27 @@ export class MackolikScraper {
     /**
      * İki takımın geçmiş maçını bulur ve oranlarını getirir.
      */
-    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null, matchId = null, { teamIdentities } = {}) {
+    async scrapeHistoricalMatch(homeTeam, awayTeam, matchDate = null, matchId = null, { teamIdentities, discoveryContext } = {}) {
+        if (matchId) return this.loadHistoricalMatch(homeTeam, awayTeam, matchDate, matchId, { teamIdentities });
+        const query = { home: homeTeam, away: awayTeam, date: this.canonicalDate(matchDate) || null, teamIdentities };
+        const known = this.discoveryCache.get('mackolik', query, discoveryContext);
+        if (known) {
+            const selected = [...known.candidates].sort((a, b) => b.date.localeCompare(a.date))[0];
+            if (selected) return this.loadHistoricalMatch(homeTeam, awayTeam, selected.date, selected.id, { teamIdentities });
+        }
+        const { value: result, dependencies } = await sourceHttp.withSourceDependencies(
+            () => this.loadHistoricalMatch(homeTeam, awayTeam, matchDate, null, { teamIdentities }));
+        if (result?.score && this.matchesRequestedMatch(result, homeTeam, awayTeam, matchDate, teamIdentities)) {
+            this.discoveryCache.remember('mackolik', query, [{ matchId: result.matchId,
+                homeTeamId: result.homeTeamId, awayTeamId: result.awayTeamId,
+                homeTeamName: result.homeTeam, awayTeamName: result.awayTeam,
+                matchDate: this.canonicalDate(result.matchDate), score: result.score,
+                url: this.toIddaaUrl(result.sourceUrl) }], dependencies);
+        }
+        return result;
+    }
+
+    async loadHistoricalMatch(homeTeam, awayTeam, matchDate = null, matchId = null, { teamIdentities } = {}) {
         this.log(`Taranıyor: ${homeTeam} vs ${awayTeam} ${matchDate ? '(' + matchDate + ')' : ''}`);
 
         // H2H selection already supplies the stable provider ID. Open that page

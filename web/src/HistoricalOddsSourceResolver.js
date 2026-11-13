@@ -3,14 +3,14 @@ import { SahadanScraper } from './SahadanScraper.js';
 
 export class HistoricalOddsSourceResolver {
     constructor(options = {}) {
-        this.scraper = options.mackolik || new MackolikScraper({ debug: options.debug ?? false, directory: options.directory });
+        this.scraper = options.mackolik || new MackolikScraper({ debug: options.debug ?? false, directory: options.directory, store: options.store });
         this.sahadan = options.sahadan || new SahadanScraper({ store: options.store, directory: options.directory });
     }
 
-    async resolveHistoricalOdds({ home, away, date, source = 'mackolik', matchId = null, teamIdentities }) {
-        if (source === 'sahadan') return this.sahadan.historical(home, away, date, matchId, { teamIdentities });
+    async resolveHistoricalOdds({ home, away, date, source = 'mackolik', matchId = null, teamIdentities }, { discoveryContext } = {}) {
+        if (source === 'sahadan') return this.sahadan.historical(home, away, date, matchId, { teamIdentities, ...(discoveryContext ? { discoveryContext } : {}) });
         if (source !== 'mackolik') throw new Error('Geçersiz geçmiş kaynak.');
-        const result = await this.scraper.scrapeHistoricalMatch(home, away, date, matchId, { teamIdentities });
+        const result = await this.scraper.scrapeHistoricalMatch(home, away, date, matchId, { teamIdentities, ...(discoveryContext ? { discoveryContext } : {}) });
         if (!result) return null;
         const provider = result.providers?.find(p => p.name === 'nesine');
         const match = {

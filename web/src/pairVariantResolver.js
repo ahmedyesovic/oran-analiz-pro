@@ -1,7 +1,8 @@
 import { AsyncResource } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { teamIdentity, isAmbiguousTeamName } from '../../utils/normalize.js';
 import { sameTeam, isPair, selectH2hSource, normalizeSahadanMatch } from './sahadanParser.js';
-import { SourceError, withSourceDeadline, getSourceDeadlineSignal } from './sourceHttp.js';
+import { SourceError, withSourceDeadline, getSourceDeadlineSignal, withSourceTransportTrace, logPairResolutionJoin } from './sourceHttp.js';
 
 const validId = value => typeof value === 'string' && /^[a-z0-9]{1,64}$/.test(value);
 const badEvidence = () => new SourceError('Sahadan takım veya maç kimliği doğrulanamadı.', 502);
@@ -41,11 +42,11 @@ export class PairVariantResolver {
         if (cached) this.cache.delete(key);
         let record = this.pending.get(key);
         if (!record) {
-            record = { controller: new AbortController(), consumers: 0, settled: false };
+            record = { controller: new AbortController(), consumers: 0, settled: false, operationId: randomUUID() };
             this.pending.set(key, record);
-            const work = this.resource.runInAsyncScope(() => withSourceDeadline(
+            const work = this.resource.runInAsyncScope(() => withSourceTransportTrace(record.operationId, () => withSourceDeadline(
                 () => this.discover(query), { timeoutMs: this.timeoutMs, signal: record.controller.signal }
-            ));
+            )));
             record.promise = work.then(result => {
                 if (!record.controller.signal.aborted && record.consumers > 0 && this.ttlMs > 0
                     && ['main', 'alternate'].includes(result.status)) {
@@ -59,6 +60,7 @@ export class PairVariantResolver {
             });
         }
         record.consumers++;
+        logPairResolutionJoin(record.operationId);
         return new Promise((resolve, reject) => {
             let finished = false;
             const finish = () => {
@@ -101,7 +103,10 @@ export class PairVariantResolver {
         if (await this.verifyPrimary(query)) return terminal('main', query);
         const primary = await this.sahadan.pairCandidates(query.home, query.away, { teamIdentities: query.teamIdentities });
         if (!Array.isArray(primary)) throw badEvidence();
-        if (primary.length) return terminal('main', query);
+        if (primary.length) {
+            const discoveryContext = this.sahadan.discoveryContext?.(query.home, query.away, { teamIdentities: query.teamIdentities });
+            return terminal('main', query, discoveryContext ? { discoveryContext } : {});
+        }
         const home = query.home + ' (K)';
         const away = query.away + ' (K)';
         const [homes, aways] = await Promise.all([this.teams(home), this.teams(away)]);
@@ -138,7 +143,11 @@ export class PairVariantResolver {
         if (!after || actual.uuid !== selected.uuid || !isPair(actual, home, away, true, expectedIds)
             || actual.status !== selected.status || !before.date || after.date !== before.date
             || (actual.status === 'Played' && (!/^\d+ - \d+$/.test(after.score || '') || after.score !== before.score))) throw badEvidence();
+        const teamIdentities = Object.fromEntries(['home', 'away'].map(side => [side, {
+            providers: [{ source: 'sahadan', providerId: expectedIds[side] }]
+        }]));
+        const discoveryContext = this.sahadan.discoveryContext?.(home, away, { teamIdentities });
         return { status: 'alternate', home, away, sourceMatchId: actual.uuid, sourceMatchDate: after.date,
-            teamIds: expectedIds };
+            teamIds: expectedIds, ...(discoveryContext ? { discoveryContext } : {}) };
     }
 }

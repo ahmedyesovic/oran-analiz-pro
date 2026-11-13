@@ -1,12 +1,20 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { getReliabilityStore } from './reliabilityStore.js';
+import { SharedSourceReads } from './SharedSourceReads.js';
 
 // Response bodies stay process-local; provider cooldowns and breakers are durable.
 const cache = new Map();
+const cacheEpochs = new Map();
+const lookupTraces = new AsyncLocalStorage();
+const transportTraces = new AsyncLocalStorage();
+const sharedReads = new SharedSourceReads({ capacityError: () => new SourceError(
+    'Ortak kaynak okuma kuyruğu dolu.', 503,
+    { retryable: true, retryAfter: 1, errorCode: 'SOURCE_SHARED_QUEUE_FULL' }) });
 const traces = new Map();
 const hosts = new Map();
 const deadlines = new AsyncLocalStorage();
+const sourceReadScopes = new AsyncLocalStorage();
 const requestTraces = new AsyncLocalStorage();
 
 // Internal correlation only; never accept an identifier or query from the client.
@@ -401,11 +409,39 @@ function fetchError(error, source) {
     return normalizedError(error, source);
 }
 
+export function withLookupTrace(lookupId, work) {
+    return lookupTraces.run(lookupId, work);
+}
+
+export function logLookupObservation({ lookupId, kind, observe, state }) {
+    if (process.env.NODE_ENV !== 'production' || !lookupId) return;
+    console.info(JSON.stringify({ event: 'lookup-observe', lookupId, kind,
+        intent: observe ? 'observe' : 'request', state,
+        ...(requestTraceId() ? { requestId: requestTraceId() } : {}) }));
+}
+
+function sourceStage(address) {
+    const path = address.pathname;
+    if (searchEngines.has(address.hostname)) return 'web-search';
+    if (address.hostname === 'cdnbulten.nesine.com') return 'current-odds';
+    if (address.hostname === 'ls.nesine.com') return 'recent-results';
+    if (path.includes('/livescores/')) return 'daily-feed';
+    if (path.startsWith('/takim/')) return 'team-schedule';
+    if (path.endsWith('/home-search') || path === '/ajax/search') return 'team-search';
+    if (path.endsWith('/karsilastirma')) return 'comparison';
+    if (path.endsWith('/rates-match') || path.includes('/iddaa')) return 'odds-archive';
+    if (path.endsWith('/match-detail') || path.startsWith('/mac/')) return 'match-details';
+    return 'provider-read';
+}
+
 function logAttempt(address, source, attempt, startedAt, queueMs, error) {
     if (process.env.NODE_ENV !== 'production') return;
-    const cancelled = error?.name === 'SourceSupersededError';
+    const cancelled = ['SourceSupersededError', 'AbortError'].includes(error?.name);
     console.info(JSON.stringify({
         event: 'source-request', host: address.hostname, source: source || allowedHosts.get(address.hostname), attempt,
+        stage: sourceStage(address),
+        ...(lookupTraces.getStore() ? { lookupId: lookupTraces.getStore() } : {}),
+        ...(transportTraces.getStore() ? { transportId: transportTraces.getStore() } : {}),
         elapsedMs: Math.max(0, Math.min(120000, Date.now() - startedAt)),
         queueMs: Math.max(0, Math.min(120000, queueMs)),
         ...(requestTraceId() ? { requestId: requestTraceId() } : {}),
@@ -506,23 +542,100 @@ export async function runSourceTask(url, work, { source, timeout = 15000, dedupl
     finally { if (deduplicate && tasks.get(key) === operation) tasks.delete(key); }
 }
 
+function sharedReadAllowed(address) {
+    const path = decodeURIComponent(address.pathname);
+    return address.hostname === 'www.mackolik.com'
+        ? path === '/perform/p0/ajax/components/competition/livescores/json'
+            || /^\/takim\/[^/]+\/maçlar\/[a-z0-9]+\/?$/i.test(path)
+        : address.hostname === 'www.sahadan.com' && /^\/takim\/[^/]+\/[a-z0-9]+\/?$/i.test(path);
+}
+
+function cacheEpoch(key) {
+    if (!cacheEpochs.has(key)) {
+        if (cacheEpochs.size >= 200) cacheEpochs.delete(cacheEpochs.keys().next().value);
+        cacheEpochs.set(key, {});
+    }
+    return cacheEpochs.get(key);
+}
+
+function detachedSourceRead(load, { signal, transportId }) {
+    return deadlines.exit(() => requestTraces.exit(() => lookupTraces.exit(() =>
+        transportTraces.run(transportId, () => withSourceDeadline(load, { timeoutMs: 45000, signal })))));
+}
+
+function logSharedJoin(address, transportId) {
+    if (process.env.NODE_ENV !== 'production') return;
+    console.info(JSON.stringify({ event: 'source-read-join', transportId,
+        ...(transportTraces.getStore() ? { parentTransportId: transportTraces.getStore() } : {}),
+        ...(requestTraceId() ? { requestId: requestTraceId() } : {}),
+        ...(lookupTraces.getStore() ? { lookupId: lookupTraces.getStore() } : {}),
+        stage: sourceStage(address), source: allowedHosts.get(address.hostname) }));
+}
+
+export async function withSourceDependencies(work) {
+    const scope = { reads: new Map(), parent: sourceReadScopes.getStore() };
+    const value = await sourceReadScopes.run(scope, work);
+    return { value, dependencies: [...scope.reads.values()] };
+}
+
+function noteSourceRead(key, token, expiresAt) {
+    for (let scope = sourceReadScopes.getStore(); scope; scope = scope.parent) {
+        const previous = scope.reads.get(key);
+        scope.reads.set(key, { key, token, expiresAt: previous?.token === token
+            ? Math.min(previous.expiresAt, expiresAt) : expiresAt });
+    }
+}
+
+export function sourceDependenciesValid(dependencies, now = Date.now()) {
+    return dependencies.every(read => cacheEpochs.get(read.key) === read.token && read.expiresAt > now);
+}
+
+export function withIndependentSourceDeadline(work, { timeoutMs = 120000, signal, transportId } = {}) {
+    return deadlines.exit(() => transportId
+        ? transportTraces.run(transportId, () => withSourceDeadline(work, { timeoutMs, signal }))
+        : withSourceDeadline(work, { timeoutMs, signal }));
+}
+
+export function withSourceTransportTrace(transportId, work) {
+    return transportTraces.run(transportId, work);
+}
+
+export function logPairResolutionJoin(pairResolutionId) {
+    if (process.env.NODE_ENV !== 'production') return;
+    console.info(JSON.stringify({ event: 'pair-resolution-join', pairResolutionId,
+        ...(requestTraceId() ? { requestId: requestTraceId() } : {}),
+        ...(lookupTraces.getStore() ? { lookupId: lookupTraces.getStore() } : {}) }));
+}
+
+export function logDiscoveryJoin(source, discoveryId) {
+    if (process.env.NODE_ENV !== 'production') return;
+    console.info(JSON.stringify({ event: 'discovery-read-join', source, discoveryId,
+        ...(transportTraces.getStore() ? { parentTransportId: transportTraces.getStore() } : {}),
+        ...(requestTraceId() ? { requestId: requestTraceId() } : {}),
+        ...(lookupTraces.getStore() ? { lookupId: lookupTraces.getStore() } : {}) }));
+}
+
 export function invalidateSourceCache(url) {
     const key = sourceAddress(url).href;
     cache.delete(key);
+    cacheEpochs.delete(key);
+    sharedReads.invalidate(key);
 }
 
-export async function sourceText(url, { ttl = 60000, source, timeout = 15000 } = {}) {
+export async function sourceText(url, { ttl = 60000, source, timeout = 15000, sharedRead = false } = {}) {
     const address = sourceAddress(url, source);
     const context = deadlines.getStore();
-    if (!context) return withSourceDeadline(() => sourceText(url, { ttl, source, timeout }));
+    if (!context) return withSourceDeadline(() => sourceText(url, { ttl, source, timeout, sharedRead }));
     checkDeadline(context);
     const key = address.href;
     const pending = context.pending;
     const existing = cache.get(key);
+    const epoch = cacheEpoch(key);
+    noteSourceRead(key, epoch, existing?.expires > Date.now() ? existing.expires : Date.now() + Math.max(0, ttl));
     if (existing && existing.expires > Date.now()) return existing.body;
     cache.delete(key);
     if (pending.has(key)) return raceSignal(pending.get(key), context.signal);
-    const promise = runSourceTask(key, async ({ signal }) => {
+    const load = () => runSourceTask(key, async ({ signal }) => {
         let response;
         try {
             response = await fetch(key, {
@@ -552,10 +665,15 @@ export async function sourceText(url, { ttl = 60000, source, timeout = 15000 } =
         if (statusError) throw statusError;
         return body;
     }, { source, timeout, deduplicate: false });
+    const promise = sharedRead && sharedReadAllowed(address)
+        ? sharedReads.read(JSON.stringify([key, source || allowedHosts.get(address.hostname), timeout, ttl]),
+            options => detachedSourceRead(load, options),
+            { signal: context.signal, url: key, onJoin: transportId => logSharedJoin(address, transportId) })
+        : load();
     pending.set(key, promise);
     try {
         const body = await raceSignal(promise, context.signal);
-        if (ttl > 0) {
+        if (ttl > 0 && cacheEpochs.get(key) === epoch) {
             if (cache.size >= 100) cache.delete(cache.keys().next().value);
             cache.set(key, { expires: Date.now() + ttl, body });
         }

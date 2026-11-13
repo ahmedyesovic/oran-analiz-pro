@@ -1,6 +1,6 @@
 import { NesineService } from './nesineService.js';
 import { HistoricalOddsSourceResolver } from './HistoricalOddsSourceResolver.js';
-import { SourceError, withSourceDeadline, getSourceRemainingMs, getSourceDeadlineSignal } from './sourceHttp.js';
+import { SourceError, withSourceDeadline, getSourceRemainingMs, getSourceDeadlineSignal, isRetryableSourceError } from './sourceHttp.js';
 import { getReliabilityStore } from './reliabilityStore.js';
 import { getTeamDirectory, TeamDirectory } from './teamDirectory.js';
 import { ARCHIVE_VERSION, archiveKey, pairKey, archiveMetadata, verifiedArchive, saveVerified, providerTeamIds, jsonValue } from './verifiedCache.js';
@@ -34,10 +34,10 @@ export class MatchService {
         this.clock = clock;
     }
 
-    lookup(query, mode = 'auto', { refresh = false, historicalHint = null } = {}) {
-        const key = JSON.stringify([mode, refresh, historicalHint, query.home, query.away, query.source, query.date, query.matchId, query.code, query.homeTeamId, query.awayTeamId, query.trustedTeamIdentities, query.trustedSourceMatchId, query.trustedSourceMatchDate]);
+    lookup(query, mode = 'auto', { refresh = false, historicalHint = null, discoveryContext } = {}) {
+        const key = JSON.stringify([mode, refresh, historicalHint, discoveryContext?.source, discoveryContext?.checkedAt, discoveryContext?.candidates?.map(ref => [ref.id, ref.date]), query.home, query.away, query.source, query.date, query.matchId, query.code, query.homeTeamId, query.awayTeamId, query.trustedTeamIdentities, query.trustedSourceMatchId, query.trustedSourceMatchDate]);
         if (this.pending.has(key)) return this.pending.get(key);
-        const promise = withSourceDeadline(() => this.lookupResolved(query, mode, { refresh, historicalHint }));
+        const promise = withSourceDeadline(() => this.lookupResolved(query, mode, { refresh, historicalHint, discoveryContext }));
         this.pending.set(key, promise);
         promise.finally(() => { if (this.pending.get(key) === promise) this.pending.delete(key); }).catch(() => {});
         return promise;
@@ -227,10 +227,13 @@ export class MatchService {
         }
     }
 
-    async lookupResolved(input, mode, { refresh = false, historicalHint = null } = {}) {
+    async lookupResolved(input, mode, { refresh = false, historicalHint = null, discoveryContext } = {}) {
         // Selected archives and exact bulletin codes already identify one
         // match. Their ordinary provider identity checks remain authoritative;
         // free pair searches and H2H still require a specific team name.
+        const resolveHistoricalOdds = query => discoveryContext
+            ? this.historical.resolveHistoricalOdds(query, { discoveryContext })
+            : this.historical.resolveHistoricalOdds(query);
         const allowMatchReference = Boolean((input.matchId && input.date) || (input.code && !input.date && mode !== 'historical'));
         const query = await this.resolveTeams(input, { allowMatchReference });
         const hint = !query.date && !query.matchId && !query.code ? historicalHint : null;
@@ -299,24 +302,19 @@ export class MatchService {
         try {
             result = await withSourceDeadline(() => {
                 primarySignal = getSourceDeadlineSignal();
-                return this.historical.resolveHistoricalOdds(effectiveQuery);
+                return resolveHistoricalOdds(effectiveQuery);
             }, { timeoutMs: primaryBudget });
         } catch (primaryError) {
             // Malformed payloads, identity errors and provider 404 are not
             // transport failures and cannot be silently hidden by fallback.
-            const upstream = primaryError?.upstreamStatus;
-            const transportFailure = primaryError instanceof SourceError && (
-                primaryError.status === 504 || upstream === 429
-                || (upstream >= 500 && upstream <= 599)
-                || (primaryError.status === 502 && /kaynağa bağlantı kurulamadı/i.test(primaryError.message))
-            );
+            const transportFailure = isRetryableSourceError(primaryError);
             const alternateBudget = Math.min(20000, getSourceRemainingMs() - 1000);
             if (!mayUseAlternate || !transportFailure || alternateBudget <= 0) throw primaryError;
             const alternate = query.source === 'mackolik' ? 'sahadan' : 'mackolik';
             const alternateQuery = { ...query, source: alternate, date, ...(hint ? { matchId: hint.id } : {}) };
             try {
                 const candidate = await withSourceDeadline(
-                    () => this.historical.resolveHistoricalOdds(alternateQuery), { timeoutMs: alternateBudget });
+                    () => resolveHistoricalOdds(alternateQuery), { timeoutMs: alternateBudget });
                 const verified = candidate && await this.bindDiscoveredTeams(alternateQuery, candidate);
                 // Only nonempty, independently verified Nesine odds may replace
                 // a transport failure; an empty archive cannot hide it.
@@ -336,7 +334,7 @@ export class MatchService {
                 if (!stoppedByBudget || retryBudget < 5000) throw primaryError;
                 try {
                     const retry = await withSourceDeadline(
-                        () => this.historical.resolveHistoricalOdds(effectiveQuery), { timeoutMs: retryBudget });
+                        () => resolveHistoricalOdds(effectiveQuery), { timeoutMs: retryBudget });
                     const verified = retry && await this.bindDiscoveredTeams(effectiveQuery, retry);
                     if (!retry || !verifiedArchive(retry, verified)) throw primaryError;
                     result = retry;

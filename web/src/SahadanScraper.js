@@ -3,14 +3,16 @@ import { parseNuxt, collectMatches, isPair, sameTeam, normalizeSahadanMatch, sel
 import { normalizeTeamName } from '../../utils/normalize.js';
 import { pairKey, archiveMetadata, verifiedHistory, saveVerified, providerTeamIds } from './verifiedCache.js';
 import { canonicalTeamQuery } from './teamDirectory.js';
+import { getSharedDiscoveryCache } from './discoveryContext.js';
 
 export class SahadanScraper {
-    constructor({ store = null, directory = null, clock = () => Date.now(), historyDeadlineMs = 120000 } = {}) {
+    constructor({ store = null, directory = null, clock = () => Date.now(), historyDeadlineMs = 120000, discoveryCache } = {}) {
         this.store = store;
         this.directory = directory;
         this.clock = clock;
         this.historyDeadlineMs = historyDeadlineMs;
         this.historyPending = new Map();
+        this.discoveryCache = discoveryCache || getSharedDiscoveryCache(store);
     }
 
     api(path, parameters = {}) {
@@ -25,7 +27,17 @@ export class SahadanScraper {
         return result.data;
     }
 
-    async pairCandidates(home, away, { teamIdentities } = {}) {
+    discoveryContext(home, away, { teamIdentities } = {}) {
+        return this.discoveryCache.get('sahadan', { home, away, teamIdentities });
+    }
+
+    async pairCandidates(home, away, { teamIdentities, discoveryContext } = {}) {
+        const result = await this.discoveryCache.read('sahadan', { home, away, teamIdentities },
+            () => this.loadPairCandidates(home, away, { teamIdentities }), { discoveryContext });
+        return result.candidates;
+    }
+
+    async loadPairCandidates(home, away, { teamIdentities } = {}) {
         const candidates = [];
         const errors = [];
         const expectedIds = providerTeamIds(teamIdentities, 'sahadan');
@@ -48,7 +60,7 @@ export class SahadanScraper {
             for (const team of teams) {
                 try {
                     const slug = normalizeTeamName(team.name).replaceAll(' ', '-');
-                    const html = await sourceText(`https://www.sahadan.com/takim/${slug}/${team.uuid}`, { source: 'sahadan', ttl: 300000 });
+                    const html = await sourceText(`https://www.sahadan.com/takim/${slug}/${team.uuid}`, { source: 'sahadan', ttl: 300000, sharedRead: true });
                     const matches = collectMatches(parseNuxt(html)).filter(match => isPair(match, home, away, true, expectedIds));
                     candidates.push(...matches);
                     const verifiedTeams = matches.flatMap(match => [match.team_A, match.team_B]);
@@ -67,9 +79,9 @@ export class SahadanScraper {
         return candidates;
     }
 
-    async discover(home, away, { teamIdentities } = {}) {
+    async discover(home, away, { teamIdentities, discoveryContext } = {}) {
         const expectedIds = providerTeamIds(teamIdentities, 'sahadan');
-        const candidates = await this.pairCandidates(home, away, { teamIdentities });
+        const candidates = await this.pairCandidates(home, away, { teamIdentities, discoveryContext });
         // A team's season schedule supplies stable IDs; match detail supplies older H2H records.
         const seed = [...candidates].sort((a, b) => b.date_time_utc.localeCompare(a.date_time_utc))[0];
         if (!seed) return [];
@@ -78,10 +90,16 @@ export class SahadanScraper {
             .filter(match => isPair(match, home, away, true, expectedIds)).map(match => [match.uuid, match])).values()];
     }
 
-    async historical(home, away, date, matchId = null, { teamIdentities } = {}) {
+    async historical(home, away, date, matchId = null, { teamIdentities, discoveryContext } = {}) {
         const expectedIds = providerTeamIds(teamIdentities, 'sahadan');
         if (!matchId) {
-            const matches = await this.discover(home, away, { teamIdentities });
+            const known = this.discoveryCache.get('sahadan', { home, away, teamIdentities }, discoveryContext);
+            const exact = known && date ? selectHistorical(this.discoveryCache.candidates(known, 'sahadan',
+                { home, away, teamIdentities }), home, away, date, expectedIds) : null;
+            if (exact) matchId = exact.id;
+        }
+        if (!matchId) {
+            const matches = await this.discover(home, away, { teamIdentities, discoveryContext });
             const selected = selectHistorical(matches, home, away, date, expectedIds);
             if (!selected) return null;
             matchId = selected.id;
@@ -121,7 +139,7 @@ export class SahadanScraper {
         return null;
     }
 
-    headToHead(home, away, { teamIdentities, refresh = false } = {}) {
+    headToHead(home, away, { teamIdentities, refresh = false, discoveryContext } = {}) {
         const key = pairKey({ home, away, teamIdentities });
         const pendingKey = `${refresh ? 'refresh:' : ''}${key}`;
         if (this.historyPending.has(pendingKey)) return this.historyPending.get(pendingKey);
@@ -137,7 +155,7 @@ export class SahadanScraper {
             }
             try {
                 return await withSourceDeadline(async () => {
-                    const result = await this.fetchHeadToHead(home, away, { teamIdentities });
+                    const result = await this.fetchHeadToHead(home, away, { teamIdentities, discoveryContext });
                     if (!verifiedHistory(result, home, away, { teamIdentities })) throw new SourceError('Sahadan karşılaştırma sonucu doğrulanamadı.');
                     if (this.store) saveVerified(this.store, 'verified-h2h', key, result, { version: 1, savedAt: this.clock() });
                     return result;
@@ -155,9 +173,9 @@ export class SahadanScraper {
         return promise;
     }
 
-    async fetchHeadToHead(home, away, { teamIdentities } = {}) {
+    async fetchHeadToHead(home, away, { teamIdentities, discoveryContext } = {}) {
         const expectedIds = providerTeamIds(teamIdentities, 'sahadan');
-        const source = selectH2hSource(await this.pairCandidates(home, away, { teamIdentities }), home, away, new Date(), expectedIds);
+        const source = selectH2hSource(await this.pairCandidates(home, away, { teamIdentities, discoveryContext }), home, away, new Date(), expectedIds);
         if (!source) throw new SourceError('Bu takımlar için Sahadan karşılaştırma sayfası bulunamadı.', 404);
         const normalized = normalizeSahadanMatch(source);
         const sourceUrl = `${normalized.sourceUrl}/karsilastirma`;
