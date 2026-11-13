@@ -39,6 +39,10 @@ export function normalizeTeamName(value) {
 }
 
 const TEAM_ALIASES = new Map([
+    ['fiorentina', 'Fiorentina'],
+    ['florentina', 'Fiorentina'],
+    ['acf fiorentina', 'Fiorentina'],
+    ['acf florentina', 'Fiorentina'],
     ['psv', 'PSV Eindhoven'],
     ['psv eindhoven', 'PSV Eindhoven'],
     ['sevilla', 'Sevilla'],
