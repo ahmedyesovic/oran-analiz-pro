@@ -46,7 +46,8 @@ export function createApp({ service = new MatchService(), directory = service.di
         if (choice?.status === 'ambiguous') {
             throw new SourceError('Bu adlarla birden fazla takım eşleşiyor. Takım seçimini listeden yapın.', 400);
         }
-        if (choice?.status !== 'alternate') return { query, warning: null };
+        const discovery = choice?.discoveryContext ? { discoveryContext: choice.discoveryContext } : {};
+        if (choice?.status !== 'alternate') return { query, warning: null, ...discovery };
         if (query.homeTeamId || query.awayTeamId || query.matchId || query.date || query.code) return { query, warning: null };
         const identities = choice.teamIds && Object.fromEntries(['home', 'away'].map(side => [side, {
             providers: [{ source: 'sahadan', providerId: choice.teamIds[side] }]
@@ -54,7 +55,7 @@ export function createApp({ service = new MatchService(), directory = service.di
         const resolved = { ...query, home: choice.home, away: choice.away,
             ...(identities ? { trustedTeamIdentities: identities,
                 trustedSourceMatchId: choice.sourceMatchId, trustedSourceMatchDate: choice.sourceMatchDate } : {}) };
-        return { query: resolved, warning: `Kaynakta doğrulanan takımlar: ${choice.home} - ${choice.away}.` };
+        return { query: resolved, warning: `Kaynakta doğrulanan takımlar: ${choice.home} - ${choice.away}.`, ...discovery };
     }
     const { legacyWaitMs = 120000, ...lookupRecoveryOptions } = recoveryOptions;
     const recovery = typeof service.cachedLookup === 'function' && typeof sahadan.cachedHeadToHead === 'function'
@@ -82,7 +83,7 @@ export function createApp({ service = new MatchService(), directory = service.di
                 } else {
                     const result = await withSourceDeadline(async () => {
                         const resolved = mode === 'auto' ? await resolvePair(query) : { query, warning: null };
-                        const data = await service.lookup(resolved.query, mode);
+                        const data = await service.lookup(resolved.query, mode, ...(resolved.discoveryContext ? [{ discoveryContext: resolved.discoveryContext }] : []));
                         return resolved.warning ? { ...data, warnings: [resolved.warning, ...(data.warnings || [])] } : data;
                     });
                     res.json(result);
@@ -97,7 +98,7 @@ export function createApp({ service = new MatchService(), directory = service.di
             const resolved = await resolvePair(query);
             const teams = service.resolveTeams ? await service.resolveTeams(resolved.query) : resolved.query;
             const teamIdentities = resolved.query.trustedTeamIdentities || teams.teamIdentities;
-            const result = await sahadan.headToHead(teams.home, teams.away, { teamIdentities });
+            const result = await sahadan.headToHead(teams.home, teams.away, { teamIdentities, ...(resolved.discoveryContext ? { discoveryContext: resolved.discoveryContext } : {}) });
             res.json(resolved.warning ? { ...result, resolutionWarning: resolved.warning } : result);
         } catch (error) { next(error); }
     });
